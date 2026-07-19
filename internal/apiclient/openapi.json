@@ -1,0 +1,1515 @@
+{
+  "components": {
+    "schemas": {
+      "Error": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "not_found",
+                  "unauthorized",
+                  "method_not_allowed",
+                  "forbidden",
+                  "invalid_request",
+                  "version_conflict",
+                  "conflict",
+                  "rate_limited",
+                  "internal"
+                ],
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "adminToken": {
+        "in": "header",
+        "name": "x-admin-token",
+        "type": "apiKey"
+      },
+      "bearerAuth": {
+        "description": "The same operator credential via Authorization: Bearer",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The frozen, additive-only /api/v1/admin surface. Errors use the stable envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`.",
+    "title": "Busbar Admin API",
+    "version": "1.4.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/admin/admin-auth": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Admin-plane auth config (the admin surface guard)",
+        "x-busbar-required-scope": "read-only"
+      },
+      "put": {
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"
+          },
+          "400": {
+            "description": "Unknown module / malformed body (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "409": {
+            "description": "Stale `If-Match` (`version_conflict`), or the new chain would lock the caller out (error code `conflict`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/audit": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Filter by exact action (e.g. `hook.register`)",
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by exact resource (e.g. `hook:x`)",
+            "in": "query",
+            "name": "resource",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, max 1000)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque continuation cursor from `next_cursor`",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/auth": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Ingress auth chain + upstream-credential mode",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/auth/cache/flush": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "`{flushed}` — entries dropped"
+          },
+          "400": {
+            "description": "Malformed body (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/config": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Effective running config snapshot (redacted)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/config/apply": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{applied, config_version, note}`"
+          },
+          "400": {
+            "description": "Invalid config (error code `invalid_request`); nothing changed"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "409": {
+            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/config/diff": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The diff (hooks added/removed/changed + global-wiring delta)"
+          },
+          "400": {
+            "description": "Missing/non-numeric `from` or `to` (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Either version pruned or never recorded (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Structured hook-surface diff between two retained versions",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/config/reload": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "`{reloaded, config_version}`"
+          },
+          "400": {
+            "description": "Disk config invalid or no config files (error code `invalid_request`); nothing changed"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/config/rollback": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{restored_version, config_version}`"
+          },
+          "400": {
+            "description": "Snapshot fails re-validation (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Target version not retained (error code `not_found`)"
+          },
+          "409": {
+            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Restore a retained version's hook surface (re-validated; a NEW version)",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/config/validate": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Verdict `{ok, errors}` (even for an invalid config)"
+          },
+          "400": {
+            "description": "Malformed request body (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Dry-run validate a proposed config",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/config/versions": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Page size (default 100, max 1000)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque continuation cursor from `next_cursor`",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/config/versions/{v}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "v",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The version (metadata + hooks + global_hooks)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Pruned or never recorded (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "One retained config version, with its hook-surface snapshot",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/hooks": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Hook registry (definitions)",
+        "x-busbar-required-scope": "read-only"
+      },
+      "post": {
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Replaced — the name existed (same-grant re-register; body is the hook definition)"
+          },
+          "201": {
+            "description": "Registered — the name is NEW (body is the hook definition)"
+          },
+          "400": {
+            "description": "Malformed body or invalid definition (`invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "hooks-register principal may not register a content-seeing (`prompt`/`user`) or `global: true` hook (`forbidden`, §6.3)"
+          },
+          "409": {
+            "description": "Base-defined hook (edit config.yaml), grant change on an existing hook, or stale `If-Match` (`version_conflict`, §6.4)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Register (or replace) a hook at runtime — live immediately",
+        "x-busbar-required-scope": "hooks-register"
+      }
+    },
+    "/api/v1/admin/hooks/{name}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "A `hooks-register` principal may not delete a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          },
+          "409": {
+            "description": "Base-defined hook — read-only via the API; edit config.yaml (error code `conflict`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Remove a hook at runtime — live immediately",
+        "x-busbar-required-scope": "hooks-register"
+      },
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "One hook definition",
+        "x-busbar-required-scope": "read-only"
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The replaced hook"
+          },
+          "400": {
+            "description": "Invalid definition (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "A `hooks-register` principal may not replace a hook into a content-seeing (`prompt`/`user`) or `global` form (error code `forbidden`, §6.3)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          },
+          "409": {
+            "description": "Base-defined hook, grant change (`conflict`), or stale `If-Match` (`version_conflict`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Replace an overlay hook definition — live immediately (grants immutable)",
+        "x-busbar-required-scope": "hooks-register"
+      }
+    },
+    "/api/v1/admin/hooks/{name}/health": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK (`reachable` may be null for webhook/non-unix)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Best-effort hook transport reachability",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/hooks/{name}/schema": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{name, schema}` (`schema` null when the hook doesn't answer describe)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The hook's self-described settings JSON Schema (describe proxy)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/hooks/{name}/settings": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acked + committed (the updated hook)"
+          },
+          "400": {
+            "description": "Hook did not acknowledge (error code `invalid_request`); nothing committed"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "A `hooks-register` principal may not push settings to a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          },
+          "409": {
+            "description": "Base-defined hook (`conflict`) or stale `If-Match` (`version_conflict`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Push an opaque settings map to the running hook; COMMIT ON ACK",
+        "x-busbar-required-scope": "hooks-register"
+      }
+    },
+    "/api/v1/admin/hooks/{name}/status": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{name, desired, reported, drift, metrics, as_of, source}`"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown hook (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/info": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Version, compiled-in plugin proof, uptime, topology",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/keys": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Filter by enabled state (`true`|`false`)",
+            "in": "query",
+            "name": "enabled",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by key-id prefix",
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, max 1000)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque continuation cursor from `next_cursor`",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{items, next_cursor}` — the cursor page envelope (next_cursor null at end)"
+          },
+          "400": {
+            "description": "Malformed/foreign pagination cursor (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)",
+        "x-busbar-required-scope": "read-only"
+      },
+      "post": {
+        "responses": {
+          "201": {
+            "description": "Created (body includes the once-shown secret)"
+          },
+          "400": {
+            "description": "Malformed body / invalid budget or rate (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "409": {
+            "description": "An Idempotency-Key request is already in flight (error code `conflict`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/keys/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked — No Content"
+          },
+          "400": {
+            "description": "Malformed `If-Match` (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown key (error code `not_found`)"
+          },
+          "409": {
+            "description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)",
+        "x-busbar-required-scope": "full"
+      },
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key metadata (+ `ETag` header)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown key (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "One key's metadata + `ETag` (never the secret/hash)",
+        "x-busbar-required-scope": "read-only"
+      },
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated metadata"
+          },
+          "400": {
+            "description": "Invalid budget/rate (error code `invalid_request`)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown key (error code `not_found`)"
+          },
+          "409": {
+            "description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/keys/{id}/rotate": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown key (error code `not_found`)"
+          },
+          "409": {
+            "description": "An Idempotency-Key request is already in flight (error code `conflict`)"
+          },
+          "429": {
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/keys/{id}/usage": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget-window counters + `rate_headroom` (fraction of the tightest RPM/TPM cap left; null = uncapped)"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown key (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Current-window usage for one key (spend / tokens / requests)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/models": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Model lanes + upstream providers",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/openapi.json": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "This OpenAPI 3.1 document",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/plugins": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Plugin type: `auth` | `hooks` (required)",
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Plugin catalog by type (compiled-in + external)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/pools": {
+      "get": {
+        "parameters": [
+          {
+            "description": "`true` inlines each member's live status (same row shape as /pools/{name})",
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/pools/{name}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "404": {
+            "description": "Unknown pool (error code `not_found`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Live per-member status of one pool (breaker/concurrency/latency)",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/providers": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Distinct providers + lane counts",
+        "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/usage": {
+      "get": {
+        "parameters": [
+          {
+            "description": "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate — bill from the raw token split, never store spend_micros as a ledger charge",
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Missing/invalid admin credential"
+          },
+          "403": {
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros",
+        "x-busbar-required-scope": "read-only"
+      }
+    }
+  }
+}

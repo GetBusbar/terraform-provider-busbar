@@ -1,0 +1,12 @@
+# Built provider binary
+/terraform-provider-busbar
+
+# Terraform working files
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Local dev overrides / examples output
+*.dev.tfrc

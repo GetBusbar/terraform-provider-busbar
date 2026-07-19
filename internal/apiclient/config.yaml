@@ -1,0 +1,12 @@
+# oapi-codegen config for the busbar admin API client.
+# Generates typed models + a net/http client with per-request editors (RequestEditorFn),
+# which is how the provider injects the x-admin-token header on every call.
+package: apiclient
+output: internal/apiclient/client.gen.go
+generate:
+  models: true
+  client: true
+output-options:
+  # Keep the generated surface lean and skip the embedded-spec blob; the provider
+  # supplies its own *http.Client (mTLS / CA pool / auth header) at construction.
+  skip-prune: false
