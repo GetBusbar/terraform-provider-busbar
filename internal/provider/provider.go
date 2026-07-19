@@ -161,9 +161,15 @@ func (p *busbarProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
-	// Hand the configured client to data sources (and, later, resources).
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	// The generated client serves the read-only data sources; the raw-HTTP admin
+	// seam serves the CRUD resources, which must send request bodies the committed
+	// OpenAPI contract does not model. Both share the same endpoint/auth/TLS.
+	data := &providerData{
+		Generated: client,
+		Admin:     newAdminClient(endpoint, token, httpClient),
+	}
+	resp.DataSourceData = data
+	resp.ResourceData = data
 }
 
 func (p *busbarProvider) DataSources(_ context.Context) []func() datasource.DataSource {
@@ -173,8 +179,11 @@ func (p *busbarProvider) DataSources(_ context.Context) []func() datasource.Data
 }
 
 func (p *busbarProvider) Resources(_ context.Context) []func() resource.Resource {
-	// Slice 1 ships no resources — config/hooks/keys land in later slices.
-	return nil
+	return []func() resource.Resource{
+		NewVirtualKeyResource,
+		NewHookResource,
+		NewConfigResource,
+	}
 }
 
 // buildHTTPClient assembles an *http.Client honoring mTLS, a custom CA, and the

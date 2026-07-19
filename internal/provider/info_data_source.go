@@ -132,15 +132,15 @@ func (d *infoDataSource) Configure(_ context.Context, req datasource.ConfigureRe
 	if req.ProviderData == nil {
 		return // provider not yet configured; framework calls again later
 	}
-	client, ok := req.ProviderData.(*apiclient.ClientWithResponses)
+	data, ok := req.ProviderData.(*providerData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected data source configure type",
-			fmt.Sprintf("Expected *apiclient.ClientWithResponses, got %T. This is a provider bug.", req.ProviderData),
+			fmt.Sprintf("Expected *providerData, got %T. This is a provider bug.", req.ProviderData),
 		)
 		return
 	}
-	d.client = client
+	d.client = data.Generated
 }
 
 func (d *infoDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
