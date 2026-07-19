@@ -1,0 +1,100 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Build, vet, format check, and unit tests. No live gateway needed.
+  build:
+    name: build & unit test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt (must be clean)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: docs are up to date
+        run: |
+          go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name busbar
+          git diff --exit-code -- docs/ || {
+            echo "docs/ is stale — run 'make docs' and commit the result"; exit 1;
+          }
+      - run: go test ./... -v
+
+  # Acceptance tests: the real Create->Read->Update->Delete->Import lifecycle
+  # against a live busbar gateway. The gateway needs a governance-enabled config
+  # file, so it is booted with an explicit `docker run` (the scratch image runs as
+  # uid 65532 and cannot write the governance volume, so run as root and keep the
+  # config + data under the workspace) rather than as a service container.
+  acceptance:
+    name: acceptance (TF_ACC)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        terraform: ["1.9.*", "1.10.*"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+      - name: boot busbar gateway
+        run: |
+          mkdir -p "$RUNNER_TEMP/busbar"
+          cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
+          admin_listen: "0.0.0.0:8081"
+          admin_insecure: true
+          models:
+            test-model:
+              provider: anthropic
+              max_concurrent: 1
+              max_requests: -1
+          providers:
+            anthropic:
+              api_key_env: "ANTHROPIC_API_KEY"
+          governance:
+            enabled: true
+            db_path: "/var/lib/busbar/governance.db"
+            admin_token: "${BUSBAR_ADMIN_TOKEN}"
+          YAML
+          docker run -d --name busbar-tfacc --user 0:0 -p 8081:8081 \
+            -e ANTHROPIC_API_KEY="dummy" -e BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+            -v "$RUNNER_TEMP/busbar/config.yaml:/etc/busbar/config.yaml:ro" \
+            -v busbar-tfacc-data:/var/lib/busbar \
+            getbusbar/busbar:1.4.0
+      - name: wait for gateway
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8081/api/v1/admin/info \
+              -H "x-admin-token: tfacc-admin-token" >/dev/null; then
+              echo "gateway up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "gateway did not become ready"; docker logs busbar-tfacc; exit 1
+      - name: acceptance tests
+        env:
+          TF_ACC: "1"
+          BUSBAR_ENDPOINT: http://localhost:8081
+          BUSBAR_ADMIN_TOKEN: tfacc-admin-token
+        run: go test ./internal/provider/ -run TestAcc -v -timeout 30m

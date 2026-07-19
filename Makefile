@@ -1,11 +1,15 @@
 BINARY  := terraform-provider-busbar
 VERSION ?= dev
 
-.PHONY: generate build fmt vet test testacc
+.PHONY: generate docs build fmt vet test testacc
 
-# Regenerate the API client from the vendored OpenAPI schema.
+# Regenerate the API client from the vendored OpenAPI schema AND the registry docs.
 generate:
 	go generate ./...
+
+# Regenerate only the Terraform Registry documentation under docs/.
+docs:
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name busbar
 
 # Build the provider binary.
 build:
