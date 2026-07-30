@@ -1,0 +1,248 @@
+name: acceptance-poll
+
+# ---------------------------------------------------------------------------
+# Why this workflow looks nothing like homebrew-busbar's bump-formula or
+# helm-charts' bump-chart.yml, even though it's the same "daily poll, self-
+# heal" pattern:
+#
+# Homebrew and Helm both track busbar in lockstep by design (a formula/chart
+# IS busbar, repackaged) so "bump a pinned version field to match busbar's
+# latest release" is always correct and safe to do unattended.
+#
+# terraform-provider-busbar is different: it's a client of a RUNNING busbar
+# instance's admin API, with its OWN independent semver. Whether a new busbar
+# release requires a new provider release depends on whether that release
+# changed the admin API surface the provider's Go code depends on -- not on
+# busbar's version number. Auto-bumping and auto-tagging a provider release
+# the moment busbar cuts a new version would be actively dangerous here: a
+# broken/incompatible provider release that Terraform users pull down can
+# corrupt live Terraform state, which is a much worse failure mode than a
+# stale Homebrew formula or Helm chart (those just fail to update until the
+# next successful poll). There is already a known, real instance of this
+# exact risk on this repo: internal/provider/virtual_key_resource.go and
+# hook_resource.go still send 1.4.x-only admin API fields that a 1.5.0
+# gateway's stricter (deny_unknown_fields) schema rejects -- see the TODO in
+# .github/workflows/test.yml. Fixing that Go code is a separate, larger
+# change and is explicitly out of scope for this workflow.
+#
+# So instead of "bump and tag", this workflow does the conservative thing:
+# check whether busbar has a release newer than the one the acceptance suite
+# was last verified against (tracked in .github/ACCEPTANCE_BUSBAR_VERSION,
+# not a released provider version), and if so, actually build that busbar
+# release from source and run the real Create->Read->Update->Delete->Import
+# acceptance suite against it end to end.
+#
+#   - Tests PASS  -> open a PR that bumps ACCEPTANCE_BUSBAR_VERSION, titled
+#                    "Acceptance tests pass against busbar vX.Y.Z", for a
+#                    human to review and decide whether a new provider
+#                    release is warranted. Nothing is auto-merged, and
+#                    nothing is auto-tagged.
+#   - Tests FAIL  -> open an issue (not a PR) with the failure output, so the
+#                    incompatibility is visible without blocking anything or
+#                    publishing anything broken. ACCEPTANCE_BUSBAR_VERSION is
+#                    left untouched.
+#
+# Daily (self-healing -- a missed run just catches up next time), on-demand,
+# and instantly on an upstream release via repository_dispatch.
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: "9 7 * * *"
+  workflow_dispatch: {}
+  repository_dispatch:
+    types: [upstream-release]   # optional instant trigger from a core release (needs a PAT)
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      candidate: ${{ steps.compare.outputs.candidate }}
+      run: ${{ steps.compare.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest="$(gh release view --repo GetBusbar/busbar --json tagName -q .tagName)"
+          pinned="$(cat .github/ACCEPTANCE_BUSBAR_VERSION)"
+          echo "latest busbar release: $latest"
+          echo "last verified against: $pinned"
+          if [ "$latest" = "$pinned" ]; then
+            echo "already verified against $latest, nothing to do"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "candidate=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  acceptance:
+    needs: check
+    if: needs.check.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.gate.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.*"
+          terraform_wrapper: false
+
+      - name: checkout busbar at candidate release
+        uses: actions/checkout@v4
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.check.outputs.candidate }}
+          path: busbar-src
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: build busbar
+        id: build
+        working-directory: busbar-src
+        run: cargo build --release -p busbar
+
+      - name: boot busbar gateway
+        id: boot
+        if: steps.build.outcome == 'success'
+        run: |
+          mkdir -p "$RUNNER_TEMP/busbar"
+          cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
+          admin_listen: "0.0.0.0:8081"
+          admin_insecure: true
+          models:
+            test-model:
+              provider: anthropic
+              max_concurrent: 1
+              max_requests: -1
+          providers:
+            anthropic:
+              api_key: { env: "ANTHROPIC_API_KEY" }
+          auth:
+            chain: [keys]
+            admin_auth:
+              - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+          YAML
+          ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+            BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
+            BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
+            ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/busbar/pid"
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8081/api/v1/admin/info \
+              -H "x-admin-token: tfacc-admin-token" >/dev/null; then
+              echo "gateway up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "gateway did not become ready against candidate release"
+          cat "$RUNNER_TEMP/busbar/busbar.log"
+          exit 1
+
+      - name: acceptance tests
+        id: test
+        if: steps.boot.outcome == 'success'
+        env:
+          TF_ACC: "1"
+          BUSBAR_ENDPOINT: http://localhost:8081
+          BUSBAR_ADMIN_TOKEN: tfacc-admin-token
+        run: go test ./internal/provider/ -run TestAcc -v -timeout 30m 2>&1 | tee "$RUNNER_TEMP/acceptance.log"
+
+      - name: gate on overall result
+        id: gate
+        if: always()
+        run: |
+          if [ "${{ steps.build.outcome }}" = "success" ] && \
+             [ "${{ steps.boot.outcome }}" = "success" ] && \
+             [ "${{ steps.test.outcome }}" = "success" ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: upload failure log
+        if: steps.gate.outputs.result == 'fail'
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-failure-${{ needs.check.outputs.candidate }}
+          path: |
+            /tmp/**/busbar.log
+            /tmp/**/acceptance.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  open-pr-on-pass:
+    needs: [check, acceptance]
+    if: needs.check.outputs.run == 'true' && needs.acceptance.outputs.result == 'pass'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ needs.check.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          git config user.name "busbar-bot"
+          git config user.email "bot@getbusbar.com"
+
+          branch="acceptance-verified/${CANDIDATE}"
+          git switch -c "$branch"
+          echo "$CANDIDATE" > .github/ACCEPTANCE_BUSBAR_VERSION
+          git add .github/ACCEPTANCE_BUSBAR_VERSION
+          git commit -m "Verify acceptance suite passes against busbar ${CANDIDATE}"
+          git push origin "$branch" --force
+
+          body_file="$(mktemp)"
+          {
+            echo "The daily acceptance-poll workflow built busbar ${CANDIDATE} from source, booted it, and ran this provider's full TestAcc suite (Create->Read->Update->Delete->Import) against it. All tests passed."
+            echo
+            echo "This does NOT mean a new provider release is automatically warranted — busbar ${CANDIDATE} may not have changed anything in the admin API surface this provider depends on. It means the provider is confirmed still compatible. A human should decide whether this release needs a corresponding provider release."
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$body_file"
+
+          if gh pr list --head "$branch" --json number -q '.[0].number' | grep -q .; then
+            echo "PR already exists for $branch"
+          else
+            gh pr create \
+              --title "Acceptance tests pass against busbar ${CANDIDATE}" \
+              --body-file "$body_file" \
+              --base main --head "$branch"
+          fi
+
+  open-issue-on-fail:
+    needs: [check, acceptance]
+    if: needs.check.outputs.run == 'true' && needs.acceptance.outputs.result == 'fail'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ needs.check.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          body_file="$(mktemp)"
+          {
+            echo "The daily acceptance-poll workflow tried to build busbar \`${CANDIDATE}\` from source, boot it, and run this provider's TestAcc suite against it. It did not pass (build, boot, or the acceptance tests themselves failed)."
+            echo
+            echo "This is exactly the kind of incompatibility this workflow exists to catch before a broken provider release ships: see the known gap already tracked in .github/workflows/test.yml (internal/provider/virtual_key_resource.go and hook_resource.go sending 1.4.x-only admin API fields that a stricter 1.5.0-style schema rejects) — this failure may be that same gap, or something new in \`${CANDIDATE}\`."
+            echo
+            echo ".github/ACCEPTANCE_BUSBAR_VERSION was left unchanged, so this will keep re-flagging on every daily run until it's resolved or superseded by a newer busbar release."
+            echo
+            echo "Run (see the uploaded acceptance-failure artifact for logs): ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$body_file"
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Acceptance tests fail against busbar ${CANDIDATE}" \
+            --body-file "$body_file" \
+            --label bug || true
