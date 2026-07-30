@@ -37,10 +37,26 @@ jobs:
       - run: go test ./... -v
 
   # Acceptance tests: the real Create->Read->Update->Delete->Import lifecycle
-  # against a live busbar gateway. The gateway needs a governance-enabled config
-  # file, so it is booted with an explicit `docker run` (the scratch image runs as
-  # uid 65532 and cannot write the governance volume, so run as root and keep the
-  # config + data under the workspace) rather than as a service container.
+  # against a live busbar gateway.
+  #
+  # TODO(busbar 1.5.0 image): no getbusbar/busbar Docker image with 1.5.0 config/API support is
+  # published yet (Docker Hub tops out at 1.4.1 as of this writing; 1.5.0 hasn't tagged). Until a
+  # 1.5.0 tag exists, this job builds the gateway from GetBusbar/busbar@main source instead of
+  # `docker run getbusbar/busbar:<tag>`. Once getbusbar/busbar:1.5.0 is published, switch the
+  # "build busbar" + "boot busbar gateway" steps below back to a pinned `docker run
+  # getbusbar/busbar:1.5.0` (faster, and tests the actual release artifact rather than a
+  # from-source build of a moving `main`).
+  #
+  # TODO(provider code, tracked separately from this workflow): even with the corrected 1.5.0
+  # config below, TestAccVirtualKeyResource is expected to fail against a real 1.5.0 gateway.
+  # internal/provider/virtual_key_resource.go still sends the 1.4.x per-key cap fields
+  # (max_budget_cents, rpm_limit, tpm_limit, budget_period) on POST/PATCH /keys; 1.5.0's
+  # CreateKeyReq is #[serde(deny_unknown_fields)] (see busbar's openapi.json), so that request
+  # now 400s. Those caps live on `groups:` in 1.5.0, not on the key. Similarly
+  # internal/provider/hook_resource.go still models the retired socket/webhook hook transports;
+  # 1.5.0's POST /hooks takes a `module` naming a signed `kind: hook` plugin instead. Both
+  # resources need a real code migration to the 1.5.0 admin API contract — that's a larger,
+  # separate change from this config/CI fix and is not attempted here.
   acceptance:
     name: acceptance (TF_ACC)
     runs-on: ubuntu-latest
@@ -58,6 +74,15 @@ jobs:
         with:
           terraform_version: ${{ matrix.terraform }}
           terraform_wrapper: false
+      - name: checkout busbar source (no 1.5.0 image published yet)
+        uses: actions/checkout@v4
+        with:
+          repository: GetBusbar/busbar
+          path: busbar-src
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build busbar
+        working-directory: busbar-src
+        run: cargo build --release -p busbar
       - name: boot busbar gateway
         run: |
           mkdir -p "$RUNNER_TEMP/busbar"
@@ -71,17 +96,17 @@ jobs:
               max_requests: -1
           providers:
             anthropic:
-              api_key_env: "ANTHROPIC_API_KEY"
-          governance:
-            enabled: true
-            db_path: "/var/lib/busbar/governance.db"
-            admin_token: "${BUSBAR_ADMIN_TOKEN}"
+              api_key: { env: "ANTHROPIC_API_KEY" }
+          auth:
+            chain: [keys]
+            admin_auth:
+              - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
           YAML
-          docker run -d --name busbar-tfacc --user 0:0 -p 8081:8081 \
-            -e ANTHROPIC_API_KEY="dummy" -e BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
-            -v "$RUNNER_TEMP/busbar/config.yaml:/etc/busbar/config.yaml:ro" \
-            -v busbar-tfacc-data:/var/lib/busbar \
-            getbusbar/busbar:1.4.0
+          ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+            BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
+            BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
+            ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/busbar/pid"
       - name: wait for gateway
         run: |
           for i in $(seq 1 30); do
@@ -91,7 +116,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "gateway did not become ready"; docker logs busbar-tfacc; exit 1
+          echo "gateway did not become ready"; cat "$RUNNER_TEMP/busbar/busbar.log"; exit 1
       - name: acceptance tests
         env:
           TF_ACC: "1"
