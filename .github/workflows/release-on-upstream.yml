@@ -1,0 +1,192 @@
+# Re-cut this provider's own next Registry release when busbar core ships.
+#
+# Upstream for THIS repo is busbar core: the provider vendors busbar's published OpenAPI 3.1
+# contract at internal/apiclient/openapi.json and generates its Go API client from it. The vendored
+# spec's info.version IS this repo's record of which busbar it was last built against.
+#
+# On an upstream-release dispatch (or the daily self-heal cron, or a manual run) this:
+#   1. resolves the target busbar release tag,
+#   2. only proceeds if that busbar is newer than the vendored spec's info.version (runaway-safe:
+#      an idle day, or a dispatch we've already ingested, is a no-op — never a spurious re-cut),
+#   3. downloads that release's busbar-openapi-<tag>.json over the vendored spec, `go generate`s the
+#      client + docs, patch-bumps THIS repo's own v* tag, commits, and pushes the tag.
+# The existing release.yml (GoReleaser, GPG-signed) then publishes to the Terraform Registry.
+#
+# There is no plain `push:` trigger, so merging this file cannot itself cut a release. Pushes use
+# RELEASE_DISPATCH_TOKEN (org secret, branch-protection-bypass-capable) as busbar-bot; the plain
+# GITHUB_TOKEN is rejected by branch protection on main.
+name: release-on-upstream
+
+on:
+  repository_dispatch:
+    types: [upstream-release]
+  schedule:
+    - cron: "17 6 * * *" # daily; minute staggered per repo so the fleet's crons don't all fire at once
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit OWN version to cut (e.g. 0.2.1). Blank = patch-bump this repo's latest v* tag."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  # Serialize overlapping dispatch + cron so we never double-cut; never cancel a run mid-tag-push.
+  group: release-on-upstream-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main (bypass-capable token, full history + tags)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "busbar-bot"
+          git config user.email "bot@getbusbar.com"
+
+      - name: Resolve whether a newer busbar warrants a re-cut
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          DISPATCH_VERSION: ${{ github.event.client_payload.version }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          cur_ver="$(jq -r '.info.version' internal/apiclient/openapi.json)"
+          echo "vendored busbar spec version: ${cur_ver:-<none>}"
+          force=no
+          target_tag=""
+          case "$EVENT_NAME" in
+            repository_dispatch)
+              # The busbar-core dispatch carries the busbar release tag (client_payload.tag).
+              target_tag="${DISPATCH_TAG:-}"
+              ;;
+            workflow_dispatch)
+              force=yes # a human explicitly asked for a re-cut; still refresh to busbar's latest
+              target_tag="$(gh api repos/GetBusbar/busbar/releases/latest --jq .tag_name 2>/dev/null || true)"
+              ;;
+            schedule)
+              # Self-heal: discover busbar's latest RELEASE tag. Best-effort — if we cannot read it,
+              # do nothing (never guess, so the cron never spuriously cuts).
+              target_tag="$(gh api repos/GetBusbar/busbar/releases/latest --jq .tag_name 2>/dev/null || true)"
+              ;;
+          esac
+          target_ver="${DISPATCH_VERSION:-}"
+          [ -z "$target_ver" ] && target_ver="${target_tag#v}"
+          echo "target busbar tag=${target_tag:-none} version=${target_ver:-none}"
+
+          spec_stale=no
+          if [ -n "$target_ver" ] && [ "$target_ver" != "$cur_ver" ]; then
+            newest="$(printf '%s\n%s\n' "$cur_ver" "$target_ver" | sort -V | tail -1)"
+            [ "$newest" = "$target_ver" ] && spec_stale=yes
+          fi
+
+          should_cut=no
+          if [ "$force" = yes ]; then
+            should_cut=yes
+            echo "::notice::manual workflow_dispatch -> cutting a release (spec_stale=${spec_stale})"
+          elif [ "$spec_stale" = yes ]; then
+            should_cut=yes
+            echo "::notice::busbar advanced (vendored=${cur_ver} -> ${target_ver}) -> cutting a release"
+          else
+            echo "::notice::no newer busbar (vendored=${cur_ver}, target=${target_ver:-none}) -> nothing to do"
+          fi
+          {
+            echo "should_cut=$should_cut"
+            echo "spec_stale=$spec_stale"
+            echo "target_tag=$target_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Refresh the vendored OpenAPI spec + regenerate the client
+        if: steps.resolve.outputs.should_cut == 'yes' && steps.resolve.outputs.spec_stale == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TARGET_TAG" --repo GetBusbar/busbar \
+            --pattern 'busbar-openapi-*.json' \
+            --output internal/apiclient/openapi.json --clobber
+          echo "refreshed vendored spec to busbar ${TARGET_TAG} (info.version=$(jq -r .info.version internal/apiclient/openapi.json))"
+          go generate ./...
+          go build ./... # sanity: the regenerated client must compile
+
+      - name: Compute this repo's next version
+        id: ver
+        if: steps.resolve.outputs.should_cut == 'yes'
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            next="${INPUT_VERSION#v}"
+            echo "::notice::using explicit workflow_dispatch version -> ${next}"
+          else
+            latest="$(git tag --list 'v*' | sort -V | tail -1)"
+            if [ -z "$latest" ]; then
+              echo "::error::no existing v* tag to patch-bump from"
+              exit 1
+            fi
+            base="${latest#v}"
+            major="$(echo "$base" | cut -d. -f1)"
+            minor="$(echo "$base" | cut -d. -f2)"
+            patch="$(echo "$base" | cut -d. -f3)"
+            next="${major}.${minor}.$((patch + 1))"
+            echo "::notice::latest tag ${latest} -> next v${next}"
+          fi
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard — no-op if the tag already exists
+        id: guard
+        if: steps.resolve.outputs.should_cut == 'yes'
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::notice::${TAG} already exists — idempotent no-op, exiting 0"
+            echo "exists=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit the spec refresh to main
+        if: steps.guard.outputs.exists == 'no' && steps.resolve.outputs.spec_stale == 'yes'
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          git add internal/apiclient/openapi.json internal/apiclient/client.gen.go docs
+          if git diff --cached --quiet; then
+            echo "::notice::spec + generated client already current, no refresh commit needed"
+          else
+            git commit -m "apiclient: refresh vendored busbar spec to ${TARGET_TAG} for the ${TAG} release"
+            git push origin HEAD:main
+          fi
+
+      - name: Create and push the release tag
+        if: steps.guard.outputs.exists == 'no'
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag "${TAG}"
+          git push origin "refs/tags/${TAG}"
+          echo "::notice::pushed ${TAG} — release.yml (GoReleaser) will now build, GPG-sign, and publish to the Terraform Registry"
