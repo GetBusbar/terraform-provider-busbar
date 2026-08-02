@@ -1,17 +1,17 @@
-# Mint a governance virtual key with a daily budget and a request-rate cap,
-# scoped to the "smart" pool. The plaintext secret is returned only once, at
-# creation, and stored in state as a sensitive value.
+# Mint a governance virtual key (busbar >= 1.5.0): a signed, expiring token,
+# bound to a `groups:` bucket that carries all budget/rate enforcement, scoped
+# to the "smart" pool. The signed token is returned only once, at creation, and
+# stored in state as a sensitive value.
 resource "busbar_virtual_key" "app" {
-  name             = "checkout-service"
-  budget_period    = "daily"
-  max_budget_cents = 5000 # $50/day
-  rpm_limit        = 60
-  tpm_limit        = 200000
-  allowed_pools    = ["smart"]
+  name          = "checkout-service"
+  group         = "team-checkout" # must exist in the gateway's `groups:` block
+  allowed_pools = ["smart"]
+  expires_in    = "30d"
+  labels        = { service = "checkout" }
 }
 
-# The bearer secret (sk-bb-...) — hand this to the calling application.
-output "app_key_secret" {
-  value     = busbar_virtual_key.app.secret
+# The signed bearer token (bbk_...) — hand this to the calling application.
+output "app_key_token" {
+  value     = busbar_virtual_key.app.token
   sensitive = true
 }

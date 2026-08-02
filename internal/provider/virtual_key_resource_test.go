@@ -8,66 +8,74 @@ import (
 )
 
 // TestAccVirtualKeyResource exercises the full lifecycle of a governance virtual
-// key against a live gateway: create (mints a once-shown secret), read-back,
-// in-place cap update (PATCH), import, then destroy (revoke). Gated on TF_ACC and
-// a reachable gateway with governance enabled (BUSBAR_ENDPOINT + BUSBAR_ADMIN_TOKEN).
+// key against a live busbar >= 1.5.0 gateway: create (mints a once-shown signed
+// token), read-back, in-place update (PATCH enabled + group unbind), import,
+// then destroy (revoke). Gated on TF_ACC and a reachable gateway with governance
+// enabled (BUSBAR_ENDPOINT + BUSBAR_ADMIN_TOKEN). The gateway's config must
+// define a `tfacc-group` entry in its top-level `groups:` block (the acceptance
+// boot config does).
 func TestAccVirtualKeyResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			// Create + Read.
+			// Create + Read: bind to an existing group, scope pools, set expiry.
 			{
 				Config: `
 provider "busbar" {}
 
 resource "busbar_virtual_key" "test" {
-  name             = "tfacc-key"
-  budget_period    = "daily"
-  max_budget_cents = 1000
-  rpm_limit        = 10
-  allowed_pools    = ["smart"]
+  name          = "tfacc-key"
+  group         = "tfacc-group"
+  allowed_pools = ["smart"]
+  expires_in    = "24h"
+  labels        = { team = "tfacc" }
 }
 `,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestMatchResourceAttr("busbar_virtual_key.test", "id",
 						regexp.MustCompile(`^vk_[0-9a-f]+$`)),
 					resource.TestCheckResourceAttr("busbar_virtual_key.test", "name", "tfacc-key"),
-					resource.TestCheckResourceAttr("busbar_virtual_key.test", "budget_period", "daily"),
-					resource.TestCheckResourceAttr("busbar_virtual_key.test", "max_budget_cents", "1000"),
-					resource.TestCheckResourceAttr("busbar_virtual_key.test", "rpm_limit", "10"),
+					resource.TestCheckResourceAttr("busbar_virtual_key.test", "group", "tfacc-group"),
+					resource.TestCheckResourceAttr("busbar_virtual_key.test", "allowed_pools.0", "smart"),
+					resource.TestCheckResourceAttr("busbar_virtual_key.test", "labels.team", "tfacc"),
 					resource.TestCheckResourceAttr("busbar_virtual_key.test", "enabled", "true"),
-					// The plaintext secret is captured once at create.
-					resource.TestMatchResourceAttr("busbar_virtual_key.test", "secret",
-						regexp.MustCompile(`^sk-bb-[0-9a-f]+$`)),
+					resource.TestCheckResourceAttr("busbar_virtual_key.test", "state", "active"),
+					resource.TestMatchResourceAttr("busbar_virtual_key.test", "expires_at",
+						regexp.MustCompile(`^[1-9][0-9]*$`)),
+					// The signed token is captured once at create.
+					resource.TestMatchResourceAttr("busbar_virtual_key.test", "token",
+						regexp.MustCompile(`^bbk_[A-Za-z0-9_\-.]+$`)),
 				),
 			},
-			// Update the mutable caps in place (PATCH).
+			// Update in place (PATCH): disable the key and unbind its group.
 			{
 				Config: `
 provider "busbar" {}
 
 resource "busbar_virtual_key" "test" {
-  name             = "tfacc-key"
-  budget_period    = "daily"
-  max_budget_cents = 5000
-  rpm_limit        = 25
-  tpm_limit        = 100000
-  allowed_pools    = ["smart"]
+  name          = "tfacc-key"
+  allowed_pools = ["smart"]
+  expires_in    = "24h"
+  labels        = { team = "tfacc" }
+  enabled       = false
 }
 `,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("busbar_virtual_key.test", "max_budget_cents", "5000"),
-					resource.TestCheckResourceAttr("busbar_virtual_key.test", "rpm_limit", "25"),
-					resource.TestCheckResourceAttr("busbar_virtual_key.test", "tpm_limit", "100000"),
+					resource.TestCheckResourceAttr("busbar_virtual_key.test", "enabled", "false"),
+					resource.TestCheckResourceAttr("busbar_virtual_key.test", "state", "disabled"),
+					resource.TestCheckNoResourceAttr("busbar_virtual_key.test", "group"),
 				),
 			},
-			// Import (secret is create-only, so it is not recovered).
+			// Import (mint-only fields are not recoverable from a read).
 			{
-				ResourceName:            "busbar_virtual_key.test",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"secret", "aws_access_key_id", "aws_secret_access_key", "allowed_pools", "issue_aws_credential"},
+				ResourceName:      "busbar_virtual_key.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				ImportStateVerifyIgnore: []string{
+					"token", "expires_in", "expires_at", "group_provisioned",
+					"issue_aws_credential", "aws_access_key_id", "aws_secret_access_key",
+				},
 			},
 		},
 	})
