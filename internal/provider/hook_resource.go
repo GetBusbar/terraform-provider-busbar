@@ -21,12 +21,13 @@ var (
 	_ resource.ResourceWithImportState = (*hookResource)(nil)
 )
 
-// hookResource manages a routing/ranking hook: an external tap or gate reached
-// over a unix socket or a webhook, wired into the request pipeline. POST /hooks
-// registers, GET/PUT/DELETE /hooks/{name} read/replace/remove. The read shape
-// (HookView) collapses socket/webhook into a transport{kind,target} pair and
-// drops the write-only on_empty/default fields, so this resource models the
-// full write surface and projects reads back onto it.
+// hookResource manages a routing/ranking hook against the busbar 1.5.0 admin
+// API: a tap or gate backed by a signed `kind: hook` plugin (named by `plugin`),
+// wired into the request pipeline. POST /hooks registers, GET/PUT/DELETE
+// /hooks/{name} read/replace/remove. The read shape (HookView) projects the
+// plugin as a transport{kind:"plugin",target:<plugin name>} pair and drops the
+// write-only on_empty/default fields, so this resource models the full write
+// surface and projects reads back onto it.
 type hookResource struct {
 	client *adminClient
 }
@@ -40,8 +41,7 @@ func NewHookResource() resource.Resource {
 type hookModel struct {
 	Name      types.String `tfsdk:"name"`
 	Kind      types.String `tfsdk:"kind"`
-	Socket    types.String `tfsdk:"socket"`
-	Webhook   types.String `tfsdk:"webhook"`
+	Plugin    types.String `tfsdk:"plugin"`
 	TimeoutMS types.Int64  `tfsdk:"timeout_ms"`
 	OnError   types.String `tfsdk:"on_error"`
 	Prompt    types.String `tfsdk:"prompt"`
@@ -59,8 +59,7 @@ type hookModel struct {
 // off the wire so the server defaults apply.
 type hookCfg struct {
 	Kind      string          `json:"kind"`
-	Socket    *string         `json:"socket,omitempty"`
-	Webhook   *string         `json:"webhook,omitempty"`
+	Plugin    string          `json:"plugin"`
 	TimeoutMS *int64          `json:"timeout_ms,omitempty"`
 	OnError   *string         `json:"on_error,omitempty"`
 	Prompt    *string         `json:"prompt,omitempty"`
@@ -100,8 +99,8 @@ type hookView struct {
 }
 
 type hookTransport struct {
-	Kind   string  `json:"kind"`   // socket | webhook | none
-	Target *string `json:"target"` // path or URL; null when neither set
+	Kind   string  `json:"kind"`   // plugin | none
+	Target *string `json:"target"` // the plugin name; null when kind is none
 }
 
 func (r *hookResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -110,10 +109,10 @@ func (r *hookResource) Metadata(_ context.Context, req resource.MetadataRequest,
 
 func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A routing hook: an external tap or gate reached over a unix socket or webhook, " +
-			"wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). " +
-			"Exactly one of socket or webhook must be set. The grant fields (kind, prompt, user) are " +
-			"immutable once registered — changing them replaces the hook.",
+		Description: "A routing hook (busbar >= 1.5.0): a tap or gate backed by a signed `kind: hook` " +
+			"plugin, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE " +
+			"/api/v1/admin/hooks). The grant fields (kind, prompt, user) are immutable once " +
+			"registered — changing them replaces the hook.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required:    true,
@@ -130,13 +129,10 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"socket": schema.StringAttribute{
-				Optional:    true,
-				Description: "Unix socket path to the hook process. Exactly one of socket or webhook.",
-			},
-			"webhook": schema.StringAttribute{
-				Optional:    true,
-				Description: "Webhook URL for the hook. Exactly one of socket or webhook.",
+			"plugin": schema.StringAttribute{
+				Required: true,
+				Description: "The signed `kind: hook` plugin this hook dispatches to (its NAME from the " +
+					"gateway's plugin catalog, e.g. a compiled-in plugin such as `ranking`).",
 			},
 			"timeout_ms": schema.Int64Attribute{
 				Optional:    true,
@@ -213,13 +209,7 @@ func (r *hookResource) Configure(_ context.Context, req resource.ConfigureReques
 
 // buildCfg projects the model onto the write-side HookCfg.
 func (r *hookResource) buildCfg(m *hookModel) (hookCfg, error) {
-	cfg := hookCfg{Kind: m.Kind.ValueString()}
-	if !m.Socket.IsNull() && !m.Socket.IsUnknown() {
-		cfg.Socket = m.Socket.ValueStringPointer()
-	}
-	if !m.Webhook.IsNull() && !m.Webhook.IsUnknown() {
-		cfg.Webhook = m.Webhook.ValueStringPointer()
-	}
+	cfg := hookCfg{Kind: m.Kind.ValueString(), Plugin: m.Plugin.ValueString()}
 	if !m.TimeoutMS.IsNull() && !m.TimeoutMS.IsUnknown() {
 		cfg.TimeoutMS = m.TimeoutMS.ValueInt64Pointer()
 	}
@@ -383,29 +373,22 @@ func (r *hookResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	}
 }
 
-// ImportState brings an existing hook under management by name. Write-only fields
-// (on_empty, default) and the socket/webhook split are recovered from the read
-// projection where possible; on_empty/default stay null after an import.
+// ImportState brings an existing hook under management by name. The write-only
+// fields (on_empty, default) are not echoed by reads and stay null after import.
 func (r *hookResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
 // applyHookView folds a HookView projection back onto the model. The read shape
-// collapses socket/webhook into transport{kind,target}, so split it back out and
+// carries the plugin as transport{kind:"plugin",target}, so project it back and
 // leave the write-only fields (on_empty, default) untouched.
 func applyHookView(m *hookModel, v *hookView) {
 	m.Name = types.StringValue(v.Name)
 	m.Kind = types.StringValue(v.Kind)
-	switch v.Transport.Kind {
-	case "socket":
-		m.Socket = optString(v.Transport.Target)
-		m.Webhook = types.StringNull()
-	case "webhook":
-		m.Webhook = optString(v.Transport.Target)
-		m.Socket = types.StringNull()
-	default:
-		m.Socket = types.StringNull()
-		m.Webhook = types.StringNull()
+	if v.Transport.Kind == "plugin" {
+		m.Plugin = optString(v.Transport.Target)
+	} else {
+		m.Plugin = types.StringNull()
 	}
 	m.TimeoutMS = types.Int64Value(v.TimeoutMS)
 	m.OnError = types.StringValue(v.OnError)

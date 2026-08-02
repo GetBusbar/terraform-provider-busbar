@@ -7,8 +7,10 @@ import (
 )
 
 // TestAccHookResource exercises the full lifecycle of a routing hook against a
-// live gateway: register (POST), read-back, replace-in-place (PUT), import, then
-// destroy (DELETE). Gated on TF_ACC + a reachable gateway.
+// live busbar >= 1.5.0 gateway: register (POST), read-back, replace-in-place
+// (PUT), import, then destroy (DELETE). 1.5.0 hooks dispatch to a signed
+// `kind: hook` plugin named by `plugin`; the compiled-in `ranking` plugin is
+// always present, so the test targets it. Gated on TF_ACC + a reachable gateway.
 func TestAccHookResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -22,7 +24,7 @@ provider "busbar" {}
 resource "busbar_hook" "test" {
   name       = "tfacc-hook"
   kind       = "gate"
-  webhook    = "https://hooks.internal.example/rank"
+  plugin     = "ranking"
   timeout_ms = 50
   priority   = 3
   settings   = jsonencode({ threshold = 0.5 })
@@ -31,7 +33,7 @@ resource "busbar_hook" "test" {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("busbar_hook.test", "name", "tfacc-hook"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "kind", "gate"),
-					resource.TestCheckResourceAttr("busbar_hook.test", "webhook", "https://hooks.internal.example/rank"),
+					resource.TestCheckResourceAttr("busbar_hook.test", "plugin", "ranking"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "timeout_ms", "50"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "priority", "3"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "prompt", "no"),
@@ -46,7 +48,7 @@ provider "busbar" {}
 resource "busbar_hook" "test" {
   name       = "tfacc-hook"
   kind       = "gate"
-  webhook    = "https://hooks.internal.example/rank"
+  plugin     = "ranking"
   timeout_ms = 120
   priority   = 9
   on_error   = "reject"

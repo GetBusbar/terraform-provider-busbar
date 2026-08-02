@@ -3,22 +3,23 @@
 page_title: "busbar_hook Resource - busbar"
 subcategory: ""
 description: |-
-  A routing hook: an external tap or gate reached over a unix socket or webhook, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). Exactly one of socket or webhook must be set. The grant fields (kind, prompt, user) are immutable once registered — changing them replaces the hook.
+  A routing hook (busbar >= 1.5.0): a tap or gate backed by a signed kind: hook plugin, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). The grant fields (kind, prompt, user) are immutable once registered — changing them replaces the hook.
 ---
 
 # busbar_hook (Resource)
 
-A routing hook: an external tap or gate reached over a unix socket or webhook, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). Exactly one of socket or webhook must be set. The grant fields (kind, prompt, user) are immutable once registered — changing them replaces the hook.
+A routing hook (busbar >= 1.5.0): a tap or gate backed by a signed `kind: hook` plugin, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). The grant fields (kind, prompt, user) are immutable once registered — changing them replaces the hook.
 
 ## Example Usage
 
 ```terraform
-# Register a blocking "gate" hook reached over a webhook: it may inspect
-# (prompt = "ro") and rerank candidates before the request is dispatched.
+# Register a blocking "gate" hook backed by a signed `kind: hook` plugin from
+# the gateway's plugin catalog: it may inspect (prompt = "ro") and rerank
+# candidates before the request is dispatched.
 resource "busbar_hook" "ranker" {
   name       = "quality-ranker"
   kind       = "gate"
-  webhook    = "https://ranker.internal.example/rank"
+  plugin     = "ranking" # a compiled-in or signed hook plugin's name
   prompt     = "ro"
   timeout_ms = 100
   priority   = 10
@@ -26,13 +27,13 @@ resource "busbar_hook" "ranker" {
   settings   = jsonencode({ min_score = 0.6 })
 }
 
-# A fire-and-forget "tap" hook over a unix socket for async usage telemetry.
+# A fire-and-forget "tap" hook for async usage telemetry.
 resource "busbar_hook" "usage_tap" {
-  name    = "usage-telemetry"
-  kind    = "tap"
-  socket  = "/run/busbar/usage.sock"
-  at      = "completion"
-  global  = true
+  name   = "usage-telemetry"
+  kind   = "tap"
+  plugin = "usage-telemetry"
+  at     = "completion"
+  global = true
 }
 ```
 
@@ -43,6 +44,7 @@ resource "busbar_hook" "usage_tap" {
 
 - `kind` (String) Transport contract: tap (fire-and-forget, non-blocking) or gate (blocking, may rewrite/reject). Immutable grant; changing it replaces the hook.
 - `name` (String) Unique hook name (<= 256 chars; not a reserved terminal name). Immutable; changing it replaces the hook.
+- `plugin` (String) The signed `kind: hook` plugin this hook dispatches to (its NAME from the gateway's plugin catalog, e.g. a compiled-in plugin such as `ranking`).
 
 ### Optional
 
@@ -54,10 +56,8 @@ resource "busbar_hook" "usage_tap" {
 - `priority` (Number) Ordering priority within a stage. Defaults to 0.
 - `prompt` (String) Prompt-content access grant: no, ro, or rw. Defaults to no. Immutable grant; changing it replaces the hook. (rw is invalid on a tap.)
 - `settings` (String) Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.
-- `socket` (String) Unix socket path to the hook process. Exactly one of socket or webhook.
 - `timeout_ms` (Number) Per-call timeout in milliseconds. Defaults to 1.
 - `user` (String) Caller-identity access grant: no or ro. Defaults to no. Immutable grant; changing it replaces the hook.
-- `webhook` (String) Webhook URL for the hook. Exactly one of socket or webhook.
 
 ## Import
 

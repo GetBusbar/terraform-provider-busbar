@@ -1,9 +1,10 @@
-# Register a blocking "gate" hook reached over a webhook: it may inspect
-# (prompt = "ro") and rerank candidates before the request is dispatched.
+# Register a blocking "gate" hook backed by a signed `kind: hook` plugin from
+# the gateway's plugin catalog: it may inspect (prompt = "ro") and rerank
+# candidates before the request is dispatched.
 resource "busbar_hook" "ranker" {
   name       = "quality-ranker"
   kind       = "gate"
-  webhook    = "https://ranker.internal.example/rank"
+  plugin     = "ranking" # a compiled-in or signed hook plugin's name
   prompt     = "ro"
   timeout_ms = 100
   priority   = 10
@@ -11,11 +12,11 @@ resource "busbar_hook" "ranker" {
   settings   = jsonencode({ min_score = 0.6 })
 }
 
-# A fire-and-forget "tap" hook over a unix socket for async usage telemetry.
+# A fire-and-forget "tap" hook for async usage telemetry.
 resource "busbar_hook" "usage_tap" {
-  name    = "usage-telemetry"
-  kind    = "tap"
-  socket  = "/run/busbar/usage.sock"
-  at      = "completion"
-  global  = true
+  name   = "usage-telemetry"
+  kind   = "tap"
+  plugin = "usage-telemetry"
+  at     = "completion"
+  global = true
 }
