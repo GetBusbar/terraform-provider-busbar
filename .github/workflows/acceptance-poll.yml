@@ -30,12 +30,16 @@ name: acceptance-poll
 # release from source and run the real Create->Read->Update->Delete->Import
 # acceptance suite against it end to end.
 #
-#   - Tests PASS  -> commit the ACCEPTANCE_BUSBAR_VERSION bump straight to
-#                    main (this org blocks Actions from creating PRs, and the
-#                    file is a pure "last version the suite was proven
-#                    against" marker — bumping it publishes nothing and tags
+#   - Tests PASS  -> record the candidate in .github/ACCEPTANCE_BUSBAR_VERSION
+#                    on the dedicated `acceptance-marker` branch (this org
+#                    blocks Actions from creating PRs and main requires PR
+#                    review, so the marker lives on its own unprotected
+#                    branch; the copy on main is only the seed the check job
+#                    falls back to when the marker branch does not exist yet).
+#                    The file is a pure "last version the suite was proven
+#                    against" marker — recording it publishes nothing and tags
 #                    nothing; whether a provider release is warranted stays a
-#                    human decision).
+#                    human decision.
 #   - Tests FAIL  -> open an issue (not a PR) with the failure output, so the
 #                    incompatibility is visible without blocking anything or
 #                    publishing anything broken. ACCEPTANCE_BUSBAR_VERSION is
@@ -70,7 +74,10 @@ jobs:
         run: |
           set -euo pipefail
           latest="$(gh release view --repo GetBusbar/busbar --json tagName -q .tagName)"
-          pinned="$(cat .github/ACCEPTANCE_BUSBAR_VERSION)"
+          # The live marker is kept on the acceptance-marker branch (record-pass
+          # cannot push to the PR-review-protected main); the copy on main is
+          # only the initial seed.
+          pinned="$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/ACCEPTANCE_BUSBAR_VERSION?ref=acceptance-marker" -q .content 2>/dev/null | base64 -d || cat .github/ACCEPTANCE_BUSBAR_VERSION)"
           echo "latest busbar release: $latest"
           echo "last verified against: $pinned"
           if [ "$latest" = "$pinned" ]; then
@@ -199,15 +206,13 @@ jobs:
       - env:
           CANDIDATE: ${{ needs.check.outputs.candidate }}
         # ACCEPTANCE_BUSBAR_VERSION is the "last busbar release this suite was
-        # proven against" marker, so a green run records the candidate directly
-        # on main. (This org blocks GitHub Actions from creating PRs, and the
-        # bump publishes/tags nothing — a provider release stays a human call.)
+        # proven against" marker. A green run records the candidate on the
+        # dedicated acceptance-marker branch (main requires PR review and this
+        # org blocks Actions-created PRs, so main itself is not writable from
+        # here; the check job reads the marker branch first). Recording
+        # publishes/tags nothing — a provider release stays a human call.
         run: |
           set -euo pipefail
-          if [ "$(cat .github/ACCEPTANCE_BUSBAR_VERSION)" = "$CANDIDATE" ]; then
-            echo "already recorded $CANDIDATE"
-            exit 0
-          fi
           git config user.name "busbar-bot"
           git config user.email "bot@getbusbar.com"
           echo "$CANDIDATE" > .github/ACCEPTANCE_BUSBAR_VERSION
@@ -215,8 +220,7 @@ jobs:
           git commit -m "Record acceptance suite passing against busbar ${CANDIDATE}
 
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git push origin HEAD:refs/heads/acceptance-marker --force
 
   # always() is load-bearing: when the acceptance JOB fails outright (build/
   # boot/test step failure), the default success() gate would SKIP this job and
