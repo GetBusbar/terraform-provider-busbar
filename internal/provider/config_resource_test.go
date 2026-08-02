@@ -7,26 +7,32 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-// The config apply document busbar boots from: the {config, providers} envelope.
-// jsonencode keeps it readable in HCL; the model's max_concurrent/max_requests and
-// the provider api_key_env / protocol / base_url are all required by the gateway.
+// The config apply document, in busbar 1.5.0 config syntax: the {config,
+// providers} envelope POSTed to /api/v1/admin/config/apply. It deliberately
+// mirrors the acceptance gateway's boot config (same auth chain, admin-tokens
+// env, providers, models, and the tfacc-group `groups:` entry the virtual-key
+// test binds to) so applying it never locks the suite out of the admin plane.
+// listen/admin_listen are omitted: an apply keeps the running listeners.
 const testAccConfigDoc = `
 provider "busbar" {}
 
 resource "busbar_config" "test" {
   document = jsonencode({
     config = {
-      auth = null
-      models = {
-        test-model = { provider = "anthropic", max_concurrent = 1, max_requests = -1 }
+      auth = {
+        chain = ["keys"]
+        admin_auth = [
+          { admin-tokens = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }
+        ]
       }
       providers = {
-        anthropic = { api_key_env = "ANTHROPIC_API_KEY" }
+        anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
       }
-      governance = {
-        enabled     = true
-        db_path     = "/var/lib/busbar/governance.db"
-        admin_token = "tfacc-admin-token"
+      models = {
+        test-model = { provider = "anthropic" }
+      }
+      groups = {
+        tfacc-group = {}
       }
     }
     providers = {
@@ -37,10 +43,11 @@ resource "busbar_config" "test" {
 `
 
 // TestAccConfigResource exercises the GitOps singleton against a live gateway:
-// apply (Create), read-back (config_version surfaced), re-apply (Update bumps the
-// version), import, and destroy (a no-op that only drops tracking). Gated on
-// TF_ACC + a reachable gateway. NOTE: this bumps config_version, so run it
-// against a disposable gateway (the acceptance recipe container).
+// apply (Create), read-back (config_version surfaced), import, and destroy (a
+// no-op that only drops tracking). Gated on TF_ACC + a reachable gateway. NOTE:
+// an apply replaces the RUNNING config wholesale (runtime-registered hooks are
+// dropped) and bumps config_version, so run it against a disposable gateway
+// (the acceptance recipe boot).
 func TestAccConfigResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },

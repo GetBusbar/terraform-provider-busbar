@@ -11,10 +11,10 @@ its admin API.
 - One read-only data source, `busbar_info` → `GET /api/v1/admin/info`.
 - Three resources:
   - **`busbar_virtual_key`** — mint/read/update/revoke a governance virtual key
-    (`POST/GET/PATCH/DELETE /api/v1/admin/keys`). The plaintext secret is returned
-    once, at creation, and stored as a sensitive value.
-  - **`busbar_hook`** — register/read/replace/remove a routing hook
-    (`POST/GET/PUT/DELETE /api/v1/admin/hooks`).
+    (`POST/GET/PATCH/DELETE /api/v1/admin/keys`, busbar ≥ 1.5.0 signed-token keys).
+    The signed token is returned once, at creation, and stored as a sensitive value.
+  - **`busbar_hook`** — register/read/replace/remove a routing hook backed by a
+    signed `kind: hook` plugin (`POST/GET/PUT/DELETE /api/v1/admin/hooks`).
   - **`busbar_config`** — a GitOps singleton that applies the whole running config
     document (`POST /api/v1/admin/config/apply`) and tracks `config_version`.
 

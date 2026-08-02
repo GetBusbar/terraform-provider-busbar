@@ -1,6 +1,7 @@
 # GitOps singleton: apply the whole running config document. Manage AT MOST ONE
-# busbar_config per gateway. The document is the JSON payload busbar boots from,
-# an envelope of { config = {DeployCfg}, providers = {name = ProviderDef} }.
+# busbar_config per gateway. The document is the JSON form of busbar's 1.5.0
+# config syntax, an envelope of { config = {config.yaml deploy block},
+# providers = {providers.yaml document} }.
 #
 # Applies are live-only by default: they revert to disk truth on the next reload
 # or restart unless the gateway persists an overlay. Destroying this resource is a
@@ -8,17 +9,20 @@
 resource "busbar_config" "running" {
   document = jsonencode({
     config = {
-      auth = null
-      models = {
-        "claude-sonnet" = { provider = "anthropic", max_concurrent = 8, max_requests = -1 }
+      auth = {
+        chain = ["keys"]
+        admin_auth = [
+          { admin-tokens = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }
+        ]
       }
       providers = {
-        anthropic = { api_key_env = "ANTHROPIC_API_KEY" }
+        anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
       }
-      governance = {
-        enabled     = true
-        db_path     = "/var/lib/busbar/governance.db"
-        admin_token = var.busbar_admin_token
+      models = {
+        "claude-sonnet" = { provider = "anthropic" }
+      }
+      groups = {
+        team-checkout = {}
       }
     }
     providers = {
