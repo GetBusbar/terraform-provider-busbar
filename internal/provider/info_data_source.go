@@ -30,9 +30,8 @@ func NewInfoDataSource() datasource.DataSource {
 	return &infoDataSource{}
 }
 
-// infoModel maps the /info response into Terraform state. The `/info` operation
-// carries no response schema in the OpenAPI contract, so the shape is modeled
-// here against busbar's InfoView (docs/admin-api.md, crate admin::v1::contract).
+// infoModel maps the /info response into Terraform state, following busbar's
+// InfoView (the 1.5.0 OpenAPI contract's GetInfo response schema).
 type infoModel struct {
 	Version           types.String `tfsdk:"version"`
 	UptimeSeconds     types.Int64  `tfsdk:"uptime_seconds"`
@@ -144,7 +143,7 @@ func (d *infoDataSource) Configure(_ context.Context, req datasource.ConfigureRe
 }
 
 func (d *infoDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
-	httpResp, err := d.client.GetApiV1AdminInfo(ctx)
+	httpResp, err := d.client.GetInfo(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read busbar info", err.Error())
 		return

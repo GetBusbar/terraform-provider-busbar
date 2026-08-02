@@ -4,7 +4,9 @@
 package apiclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,14 +16,1290 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
-// PutApiV1AdminAdminAuthParams defines parameters for PutApiV1AdminAdminAuth.
-type PutApiV1AdminAdminAuthParams struct {
+// Defines values for ErrorErrorCode.
+const (
+	Conflict         ErrorErrorCode = "conflict"
+	Forbidden        ErrorErrorCode = "forbidden"
+	Internal         ErrorErrorCode = "internal"
+	InvalidRequest   ErrorErrorCode = "invalid_request"
+	MethodNotAllowed ErrorErrorCode = "method_not_allowed"
+	NotFound         ErrorErrorCode = "not_found"
+	RateLimited      ErrorErrorCode = "rate_limited"
+	Unauthorized     ErrorErrorCode = "unauthorized"
+	VersionConflict  ErrorErrorCode = "version_conflict"
+)
+
+// Valid indicates whether the value is a known member of the ErrorErrorCode enum.
+func (e ErrorErrorCode) Valid() bool {
+	switch e {
+	case Conflict:
+		return true
+	case Forbidden:
+		return true
+	case Internal:
+		return true
+	case InvalidRequest:
+		return true
+	case MethodNotAllowed:
+		return true
+	case NotFound:
+		return true
+	case RateLimited:
+		return true
+	case Unauthorized:
+		return true
+	case VersionConflict:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DeleteOverlaySectionParamsSection.
+const (
+	Groups         DeleteOverlaySectionParamsSection = "groups"
+	Hooks          DeleteOverlaySectionParamsSection = "hooks"
+	PluginVersions DeleteOverlaySectionParamsSection = "plugin_versions"
+	Root           DeleteOverlaySectionParamsSection = "root"
+)
+
+// Valid indicates whether the value is a known member of the DeleteOverlaySectionParamsSection enum.
+func (e DeleteOverlaySectionParamsSection) Valid() bool {
+	switch e {
+	case Groups:
+		return true
+	case Hooks:
+		return true
+	case PluginVersions:
+		return true
+	case Root:
+		return true
+	default:
+		return false
+	}
+}
+
+// AdminAuthPutView `PUT /admin-auth` — the resource post-state (`{configured, modules}`, the same shape
+// `GET /admin-auth` returns) plus apply metadata, so a client uses the PUT response as post-state.
+type AdminAuthPutView struct {
+	Applied       bool     `json:"applied"`
+	ConfigVersion uint64   `json:"config_version"`
+	Configured    bool     `json:"configured"`
+	Modules       []string `json:"modules"`
+	Note          string   `json:"note"`
+}
+
+// AdminAuthView The admin-plane auth read (`GET /api/v1/admin/admin-auth`) — which modules guard the ADMIN surface
+// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
+// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
+// the open (anonymous, full-authority) dev posture — `configured: false`. Never a secret.
+type AdminAuthView struct {
+	// Configured Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
+	Configured bool `json:"configured"`
+
+	// Modules The active admin-plane guard module names — the `admin_auth` chain verbatim (e.g.
+	// `["admin-tokens"]`), reported in order. Empty when the admin plane is open.
+	Modules []string `json:"modules"`
+}
+
+// AuditEntry One admin audit record. `outcome` is a stable token tooling can branch on. The record is
+// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
+// outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
+// altered/reordered/deleted entry (detection, not prevention — a compromised host can still rewrite
+// the whole chain; prevention is shipping the log off-box to a SIEM).
+type AuditEntry struct {
+	// Action The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).
+	Action string `json:"action"`
+
+	// Hash `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the tamper-evidence digest.
+	Hash string `json:"hash"`
+
+	// Outcome Stable outcome token: `applied` (mutation committed) | `rejected` (validation/conflict, nothing
+	// changed).
+	Outcome string `json:"outcome"`
+
+	// PrevHash The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
+	// entry whose predecessor was pruned).
+	PrevHash string `json:"prev_hash"`
+
+	// Principal WHO — the authenticated principal id that attempted the mutation (`admin` for the operator
+	// token; a virtual-key id or an external module's principal id otherwise; `anonymous` for the
+	// explicit open admin posture). Attribution, never a credential.
+	Principal string `json:"principal"`
+
+	// Resource The resource acted on (e.g. `hook:compress`). Never a secret.
+	Resource string `json:"resource"`
+
+	// Seq Monotonic sequence number (1-based), unique within a process lifetime.
+	Seq uint64 `json:"seq"`
+
+	// Ts Unix seconds when the mutation was attempted.
+	Ts uint64 `json:"ts"`
+}
+
+// AuditPageView `GET /audit` — the cursor-paginated audit-log envelope (`{items, next_cursor}`, hand-rolled in the
+// audit handler).
+type AuditPageView struct {
+	Items      []AuditEntry `json:"items"`
+	NextCursor *string      `json:"next_cursor"`
+}
+
+// AuthView The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
+// callers + the upstream-credential mode. Never a secret — module names and the mode are config
+// identifiers, not credentials. An empty `chain` is the open front door (admits every request).
+type AuthView struct {
+	// Chain Ordered auth-chain module names (`[]` = open front door).
+	Chain []string `json:"chain"`
+
+	// Open Whether the front door is open (empty chain admits unconditionally).
+	Open bool `json:"open"`
+
+	// UpstreamCredentials `"own"` (busbar signs egress with its configured key) or `"passthrough"` (forward the caller's
+	// credential upstream).
+	UpstreamCredentials string `json:"upstream_credentials"`
+}
+
+// BuildInfo The compiled-in feature proof (`InfoView.build`).
+type BuildInfo struct {
+	// AuthModules Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
+	AuthModules []string `json:"auth_modules"`
+
+	// HookPlugins Hook plugins baked into this binary (e.g. `["ranking"]`).
+	HookPlugins []string `json:"hook_plugins"`
+
+	// WeightedFloor The inline SWRR floor — ALWAYS `true` (compiled in unconditionally, non-removable).
+	WeightedFloor bool `json:"weighted_floor"`
+}
+
+// CacheFlushView `POST /auth/cache/flush` — number of cached credential-decision entries dropped.
+type CacheFlushView struct {
+	Flushed uint `json:"flushed"`
+}
+
+// ConfigApplyView `POST /config/apply` — apply-a-full-config result. The change is live but not written to disk.
+type ConfigApplyView struct {
+	Applied       bool   `json:"applied"`
+	ConfigVersion uint64 `json:"config_version"`
+	Note          string `json:"note"`
+}
+
+// ConfigDiffGlobalHooks The `global_hooks` delta of a `GET /config/diff` — present only when the global wiring changed.
+type ConfigDiffGlobalHooks struct {
+	From []string `json:"from"`
+	To   []string `json:"to"`
+}
+
+// ConfigDiffHooks The `hooks` object of a `GET /config/diff` — hook names added / removed / changed between the two
+// versions.
+type ConfigDiffHooks struct {
+	Added   []string `json:"added"`
+	Changed []string `json:"changed"`
+	Removed []string `json:"removed"`
+}
+
+// ConfigDiffView `GET /config/diff` — structured hook-surface diff between two retained versions. `global_hooks` is
+// present only when the global wiring differed between the two sides.
+type ConfigDiffView struct {
+	From        uint64                 `json:"from"`
+	GlobalHooks *ConfigDiffGlobalHooks `json:"global_hooks,omitempty"`
+
+	// Hooks The `hooks` object of a `GET /config/diff` — hook names added / removed / changed between the two
+	// versions.
+	Hooks ConfigDiffHooks `json:"hooks"`
+	To    uint64          `json:"to"`
+}
+
+// ConfigReloadView `POST /config/reload` — reload-from-disk result.
+type ConfigReloadView struct {
+	ConfigVersion uint64 `json:"config_version"`
+	Reloaded      bool   `json:"reloaded"`
+}
+
+// ConfigRollbackView `POST /config/rollback` — restore-a-retained-version result (the restored version + the NEW
+// config version the rollback produced).
+type ConfigRollbackView struct {
+	ConfigVersion   uint64 `json:"config_version"`
+	RestoredVersion uint64 `json:"restored_version"`
+}
+
+// ConfigSettingsView `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
+// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
+// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
+// a restart WHEN a config overlay is configured (`BUSBAR_CONFIG_OVERLAY`) — a busbar with none
+// applies the change live only, and `note` says so; `PUT` with `"persist": true` makes storage
+// mandatory, refusing (`400`) rather than silently applying in memory when no overlay exists.
+// `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
+// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are
+// read once at process start, and the durable `store` backend is reused across a hot reload — none
+// can hot-swap, so they take effect on the next RESTART (or a supervisor restart), NEVER on a
+// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
+// rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
+// (no overlay); `note` names the affected fields instead. Everything else
+// (`rate_card`/`per_request_fee`/`security`/`advanced`/`metrics`/`health`/`routing`) is LIVE on the
+// swap; `limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):
+// `upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the
+// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
+// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
+// only `Arc<App>`, never the router) — two independent freezing mechanisms. `observability` is live
+// EXCEPT three boot-scoped fields: `emit_server_timing` (baked into router middleware state at
+// boot), `request_log_webhook_url` (seeds a process-global `OnceLock` that no-ops after the first
+// `main()` call), and `otlp_url` (feeds a one-shot `tracing_subscriber` init) — none rebuilt by an
+// apply.
+type ConfigSettingsView struct {
+	// Applied `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
+	Applied       bool   `json:"applied"`
+	ConfigVersion uint64 `json:"config_version"`
+
+	// Note A human note describing the live-vs-reload split (absent on a GET).
+	Note *string `json:"note,omitempty"`
+
+	// ReloadToApply Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
+	// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
+	// make them live — `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
+	// only live-swappable fields (or on a GET). The field NAME is frozen wire; only this description
+	// changed.
+	ReloadToApply *[]string `json:"reload_to_apply,omitempty"`
+
+	// Settings The current effective root-section overlay (only the fields the operator has set; base
+	// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection).
+	Settings interface{} `json:"settings"`
+}
+
+// ConfigValidateView The result of `POST /api/v1/admin/config/validate` — a DRY-RUN: does a proposed config resolve +
+// validate, WITHOUT applying anything. `ok` is the verdict; `errors` lists every structural/resolution
+// failure at once (empty when `ok`). A well-formed request always returns 200 with this view (a valid
+// request that describes an INVALID config is `ok: false`, not an HTTP error); only a MALFORMED request
+// body is an `invalid_request`. Env-var interpolation is out of scope — this checks structure and
+// cross-reference resolution, not runtime secret presence.
+type ConfigValidateView struct {
+	Errors []string `json:"errors"`
+	Ok     bool     `json:"ok"`
+}
+
+// ConfigVersion One recorded config version: the metadata the versions LIST shows, plus the full hook-surface
+// snapshot rollback restores. Never contains a secret (hook definitions are operator config —
+// transports, grants, deadlines).
+type ConfigVersion struct {
+	// Principal The acting principal (audit attribution, same handle as the audit log).
+	Principal string `json:"principal"`
+
+	// Summary Human summary of the mutation that produced this version (e.g. `hook.register hook:x`).
+	Summary string `json:"summary"`
+
+	// Ts Unix seconds when the mutation committed.
+	Ts uint64 `json:"ts"`
+
+	// Version The `App.config_version` this snapshot corresponds to (monotonic per process).
+	Version uint64 `json:"version"`
+}
+
+// ConfigVersionDetailView `GET /config/versions/{v}` — one retained config version WITH its full hook-surface snapshot
+// (projected through the wire `HookView`, keyed by hook name) and the global wiring at that version.
+type ConfigVersionDetailView struct {
+	GlobalHooks []string            `json:"global_hooks"`
+	Hooks       map[string]HookView `json:"hooks"`
+	Principal   string              `json:"principal"`
+	Summary     string              `json:"summary"`
+	Ts          uint64              `json:"ts"`
+	Version     uint64              `json:"version"`
+}
+
+// ConfigVersionPageView `GET /config/versions` — the cursor-paginated version-history envelope (`{items, next_cursor}`).
+type ConfigVersionPageView struct {
+	Items      []ConfigVersion `json:"items"`
+	NextCursor *string         `json:"next_cursor"`
+}
+
+// CreateKeyReq `POST /keys` body (1.5.0 signed-token keys, S1): PURE AUTH + a signed expiring token. A minted
+// key is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all
+// enforcement flows through the bound `group`. `#[serde(deny_unknown_fields)]` so the removed
+// 1.4.x fields (max_budget_cents/rpm_limit/tpm_limit/budget_period) fail loudly.
+type CreateKeyReq struct {
+	// AllowedPools Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools (C6).
+	AllowedPools *[]string `json:"allowed_pools,omitempty"`
+
+	// ExpiresAt Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.
+	ExpiresAt *uint64 `json:"expires_at,omitempty"`
+
+	// ExpiresIn Token lifetime as a duration string (`7d`, `24h`, `30m`, `3600s`) - the token's `exp` is
+	// `now + expires_in`. Mutually exclusive with `expires_at`. Absent (and no `expires_at`) => a
+	// sane long default (see `DEFAULT_KEY_TTL_SECS`).
+	ExpiresIn *string `json:"expires_in,omitempty"`
+
+	// Group The `groups:` bucket this key binds to (at most one). A key with NO group is authed +
+	// unlimited (access only). If the named group EXISTS, the key binds to it. If it does NOT
+	// exist, the mint 400s UNLESS `parent` is given — then it is AUTO-PROVISIONED as a leaf under
+	// `parent` (self-service D2; see `parent`).
+	Group *string `json:"group,omitempty"`
+
+	// IssueAwsCredential When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible
+	// model) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.
+	IssueAwsCredential *bool `json:"issue_aws_credential,omitempty"`
+
+	// Labels Optional mint-time labels echoed onto this key's metric series; never interpreted by
+	// enforcement.
+	Labels *map[string]string `json:"labels,omitempty"`
+	Name   string             `json:"name"`
+
+	// Parent AUTO-PROVISION target: the EXISTING parent group under which to create
+	// `group` as a leaf when `group` does not yet exist — the first-self-mint materialization of a
+	// `user:<sub>` personal budget bucket. The new leaf's limits come from the nearest-ancestor
+	// `child_default` template (inherit-only when none up the chain), created through the same
+	// validate-at-the-door path as `POST /groups`. If `group` ALREADY exists, `parent` must equal
+	// its actual parent (else 409) — a mint never re-homes an existing group. Ignored when `group`
+	// is absent (a key with no group has nothing to provision).
+	Parent *string `json:"parent,omitempty"`
+}
+
+// CreatedKeyView `POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
+// credential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a
+// bearer-only mint.
+type CreatedKeyView struct {
+	AllowedPools *[]string `json:"allowed_pools"`
+
+	// AwsAccessKeyId AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.
+	AwsAccessKeyId *string `json:"aws_access_key_id,omitempty"`
+
+	// AwsSecretAccessKey AWS SigV4 secret access key — shown once (present only with an AWS credential).
+	AwsSecretAccessKey *string `json:"aws_secret_access_key,omitempty"`
+	CreatedAt          uint64  `json:"created_at"`
+	Enabled            bool    `json:"enabled"`
+
+	// ExpiresAt Unix-seconds expiry of the signed token.
+	ExpiresAt uint64  `json:"expires_at"`
+	Group     *string `json:"group"`
+
+	// GroupProvisioned Whether this mint AUTO-PROVISIONED its bound group leaf (self-service D2) — lets a portal
+	// distinguish "bound to an existing bucket" from "created your personal bucket + bound".
+	GroupProvisioned bool              `json:"group_provisioned"`
+	Id               string            `json:"id"`
+	Labels           map[string]string `json:"labels"`
+	Name             string            `json:"name"`
+
+	// State E-007: same field as `KeyView.state` — a fresh mint is always `"active"` (enabled, not
+	// revoked, not deleted).
+	State string `json:"state"`
+
+	// Token The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never
+	// returned by any read. (This is the field a client must capture to authenticate.)
+	Token string `json:"token"`
+}
+
+// EffectiveConfigView The EFFECTIVE config snapshot (`GET /api/v1/admin/config`) — the running configuration as busbar
+// resolved it, for drift detection (compare against your desired config) and one-shot inspection.
+// Composed from the same REDACTED reads as the individual endpoints (auth chain names, pool/model/
+// provider topology, hook definitions, global-hook wiring) — so it carries NO secret: no client
+// tokens, no provider keys, no hook payloads. Additive-only; the source-layer annotation (base vs
+// overlay) lands with the config overlay substrate.
+type EffectiveConfigView struct {
+	// Auth The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
+	// callers + the upstream-credential mode. Never a secret — module names and the mode are config
+	// identifiers, not credentials. An empty `chain` is the open front door (admits every request).
+	Auth AuthView `json:"auth"`
+
+	// GlobalHooks Names fired on every request (`global_hooks:` + any inline `global: true`).
+	GlobalHooks []string       `json:"global_hooks"`
+	Hooks       []HookView     `json:"hooks"`
+	Models      []ModelView    `json:"models"`
+	Pools       []PoolView     `json:"pools"`
+	Providers   []ProviderView `json:"providers"`
+
+	// Version The monotonic config version at the time of this read (see `InfoView.config_version`) — so a
+	// drift-detection read gets the config AND its version in one call.
+	Version uint64 `json:"version"`
+}
+
+// Error defines model for Error.
+type Error struct {
+	Error struct {
+		Code    ErrorErrorCode `json:"code"`
+		Message string         `json:"message"`
+	} `json:"error"`
+}
+
+// ErrorErrorCode defines model for Error.Error.Code.
+type ErrorErrorCode string
+
+// FlushCacheReq The `POST /api/v1/admin/auth/cache/flush` body. An absent body (or an absent `module`) flushes
+// every partition. Deliberately NOT `deny_unknown_fields`: the endpoint has always ignored extra
+// members, and tightening that would reject a call that works today.
+type FlushCacheReq struct {
+	// Module The auth module whose cache partition to flush. Omitted = flush all.
+	Module *string `json:"module,omitempty"`
+}
+
+// GroupBucketUsageView One `(window, pool?)` enforcement bucket's usage vs caps inside a [`GroupUsageView`].
+type GroupBucketUsageView struct {
+	BudgetCap *int64 `json:"budget_cap,omitempty"`
+
+	// BudgetRemainingCents Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.
+	BudgetRemainingCents *int64 `json:"budget_remaining_cents,omitempty"`
+
+	// Pool The pool scope for a pool-qualified bucket; absent for a group-wide bucket.
+	Pool *string `json:"pool,omitempty"`
+
+	// Requests Requests admitted this window (the requests-limit truth: failures are not refunded).
+	Requests uint64 `json:"requests"`
+
+	// RequestsCap The bucket's caps, when configured (absent = uncapped on that metric).
+	RequestsCap *uint64 `json:"requests_cap,omitempty"`
+
+	// SpendCents Spend derived at read time (tokens x current rate card), abstract cents.
+	SpendCents int64 `json:"spend_cents"`
+
+	// Tokens Total tokens ledgered this window (all tiers).
+	Tokens    uint64  `json:"tokens"`
+	TokensCap *uint64 `json:"tokens_cap,omitempty"`
+
+	// Window The accounting window: `minute` | `hour` | `day` | `month` | `total`.
+	Window string `json:"window"`
+}
+
+// GroupUsageView `GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per
+// enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
+// caps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
+// ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
+// tool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.
+type GroupUsageView struct {
+	// AsOf Epoch seconds the read was taken at (the windows below are current AS OF this instant).
+	AsOf uint64 `json:"as_of"`
+
+	// Buckets One row per enforcement bucket, in the group's resolved bucket order. Empty for a group
+	// with only a `concurrent` limit (or none) — there is no windowed ledger to read.
+	Buckets []GroupBucketUsageView `json:"buckets"`
+
+	// Enabled `false` = the group is FROZEN (`enabled: false`): every request through it rejects.
+	Enabled bool `json:"enabled"`
+
+	// Group The group name (echoed from the path).
+	Group string `json:"group"`
+}
+
+// GroupView A group definition in the registry read (`GET /api/v1/admin/groups`,
+// `GET /api/v1/admin/groups/{name}`) — the limit-tree read surface. Projects the `groups:` config
+// entry faithfully (parent chain, enabled freeze flag, the ordered limits, the `child_default`
+// budget template for auto-provisioned children), never a secret. This is the READ shape; the
+// WRITE verbs accept a `GroupCfg` verbatim (paste a config.yaml group block). Additive-only.
+type GroupView struct {
+	// ChildDefault The limit template stamped onto children auto-provisioned under this group (e.g. a
+	// `user:<sub>` leaf on first self-mint). Skipped from the body when the group sets none.
+	ChildDefault *[]LimitView `json:"child_default,omitempty"`
+
+	// Enabled `false` FREEZES the group (every request charging through it is rejected; history kept).
+	Enabled bool `json:"enabled"`
+
+	// Limits The group's own limits, enforced together (AND). Order preserved from config.
+	Limits []LimitView `json:"limits"`
+	Name   string      `json:"name"`
+
+	// Parent The parent group whose limits this one is ANDed under (the enforcement chain). `None` = a
+	// root group. Skipped from the body when absent.
+	Parent *string `json:"parent,omitempty"`
+}
+
+// HookDesiredStatus The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
+// and their version.
+type HookDesiredStatus struct {
+	Settings        map[string]interface{} `json:"settings"`
+	SettingsVersion uint64                 `json:"settings_version"`
+}
+
+// HookHealthView The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). Checks
+// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry —
+// this is a plugin-LOAD status check, not a network reachability probe: it never opens a
+// connection, and it cannot tell you whether a `kind: hook` plugin's own configured external
+// endpoint (e.g. `busbar-webrequest-hook`'s `settings.url`) is actually reachable, only that the
+// plugin itself is loaded. Never fires the hook. Additive-only.
+type HookHealthView struct {
+	// Detail A short human note on the resolution (why `false`, or the resolved plugin's kind). Never a
+	// secret.
+	Detail *string `json:"detail"`
+	Name   string  `json:"name"`
+
+	// Reachable `Some(true)` = resolves to a loaded `kind: hook` plugin; `Some(false)` = it does not
+	// (wrong kind, or not installed/loaded) — always `Some`, never `None`, as of 1.5.0's
+	// in-process plugin model.
+	Reachable *bool `json:"reachable"`
+
+	// Transport The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
+	// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
+	// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+	Transport HookTransportView `json:"transport"`
+}
+
+// HookReportedStatus The REPORTED settings side of `hooks/{name}/status`: what the hook says it is actually running
+// (present only when the hook answered `status`).
+type HookReportedStatus struct {
+	Settings        *map[string]interface{} `json:"settings"`
+	SettingsVersion *uint64                 `json:"settings_version"`
+}
+
+// HookSchemaView `GET /hooks/{name}/schema` — the hook's self-described settings JSON Schema (proxied over the
+// `describe` wire message), or `null` when the hook/transport does not answer.
+type HookSchemaView struct {
+	Name string `json:"name"`
+
+	// Schema The hook's settings JSON Schema verbatim (an arbitrary JSON object), or `null`.
+	Schema interface{} `json:"schema"`
+}
+
+// HookStatusView `GET /hooks/{name}/status` — the hook's OBSERVED state: desired vs reported settings with a
+// `drift` verdict, plus the hook's self-reported metrics. `reported`/`drift` are `null` and `note`
+// is present when the hook did not answer (fail-open); `metrics` is invariantly an array.
+type HookStatusView struct {
+	AsOf uint64 `json:"as_of"`
+
+	// Desired The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
+	// and their version.
+	Desired HookDesiredStatus `json:"desired"`
+	Drift   *bool             `json:"drift"`
+
+	// Metrics Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when
+	// the hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/
+	// `label`/`unit`/`viz`/`max` members.
+	//
+	// E-004 (busbar-ui/docs/ENGINE-BUGS.md): schemars' blanket `JsonSchema` impl for
+	// `serde_json::Value` renders as the JSON-Schema-2020-12 boolean `true` (`schemars-1.2.1`'s
+	// `json_schema_impls/serdejson.rs`), which is legal 2020-12 but — nested here as this array's
+	// `items` — is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which
+	// every published SDK generates through) cannot represent one at all: the parse aborts, taking
+	// out Python/TS/Go SDK regeneration simultaneously. `#[schemars(schema_with)]` overrides just
+	// this field's schema to `{"type": "array", "items": {}}` — `{}` is the equivalent "accepts
+	// anything" schema every generator DOES understand, and is what busbar-ui's own
+	// `openapi-prep.py` already rewrites `items: true` into client-side. This is the only
+	// `items: true` in the document; every other `additionalProperties: true` schemars emits
+	// elsewhere is a boolean in a position `kin-openapi` handles fine and is deliberately untouched.
+	Metrics []interface{} `json:"metrics"`
+	Name    string        `json:"name"`
+
+	// Note A short human note present only on the fail-open (no-answer) branch.
+	Note     *string             `json:"note,omitempty"`
+	Reported *HookReportedStatus `json:"reported"`
+
+	// Source Always `"live"` (the read is a live transport query).
+	Source string `json:"source"`
+}
+
+// HookTransportView The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
+// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
+// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+type HookTransportView struct {
+	// Kind `"plugin"` for a signed dlopen'd hook plugin, or `"none"` for a hook with no plugin
+	// transport (compiled-in kinds, or a misconfigured entry).
+	Kind string `json:"kind"`
+
+	// Target The plugin's NAME (not a path or URL). `None` when `kind` is `"none"`.
+	Target *string `json:"target"`
+}
+
+// HookView A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the
+// plugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a
+// secret. `global` reports whether the hook fires on every request (named in `global_hooks:` or
+// declared `global: true`). Live connection status (`health`) is a separate endpoint. Additive-only.
+type HookView struct {
+	// At TAP observation stage (`"request"`/`"route"`/`"attempt"`/`"completion"`), or `None` for a gate.
+	At *string `json:"at"`
+
+	// Global Whether this hook fires on every request (globally wired).
+	Global bool `json:"global"`
+
+	// Kind `"tap"` (fire-and-forget) or `"gate"` (fire-and-wait).
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+
+	// OnError Gate fallback on timeout/error — a CLOSED, unambiguous string union (audit #8): one of the
+	// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
+	// fallback hook the chain continues through. Unambiguous by construction: the terminal words
+	// are ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in
+	// the terminal set is always a terminal and anything else is always a hook reference.
+	OnError string `json:"on_error"`
+
+	// Priority Rewrite/reject ordering key (transform-chain order + reject tie-break).
+	Priority uint16 `json:"priority"`
+
+	// Prompt Prompt access grant: `"no"` | `"ro"` | `"rw"`.
+	Prompt string `json:"prompt"`
+
+	// Settings The hook's opaque settings map (operator/API-owned; pushed via the configure wire). Never
+	// interpreted by busbar; never a secret by contract (hook settings are operator config).
+	Settings map[string]interface{} `json:"settings"`
+
+	// TimeoutMs Gate decision deadline in milliseconds.
+	TimeoutMs uint64 `json:"timeout_ms"`
+
+	// Transport The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
+	// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
+	// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+	Transport HookTransportView `json:"transport"`
+
+	// User Caller-identity access grant: `"no"` | `"ro"`.
+	User string `json:"user"`
+}
+
+// InfoView The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers
+// version negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect
+// the ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a
+// provably smaller surface. No LLM content, ever.
+type InfoView struct {
+	// Build The compiled-in feature proof (`InfoView.build`).
+	Build BuildInfo `json:"build"`
+
+	// ConfigPersistence Whether config-overlay persistence is enabled (`BUSBAR_CONFIG_OVERLAY` set): `true` = API-applied
+	// config changes are durable across restarts; `false` = live-only (lost on restart). Lets tooling
+	// tell an operator whether their runtime changes will survive a restart.
+	ConfigPersistence bool `json:"config_persistence"`
+
+	// ConfigVersion Monotonic config version — `0` at boot, +1 per API config apply. Drift-detection: re-read and
+	// compare to tell whether the running config changed. Process-local (resets on restart).
+	ConfigVersion uint64 `json:"config_version"`
+
+	// StartedAt Epoch seconds of process start — the BOOT EPOCH marker: `config_version` (and any
+	// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
+	// to read a counter reset as "new epoch", never as "reverted" (audit minor #2 / #4).
+	StartedAt *uint64 `json:"started_at"`
+
+	// Topology Pool/model/provider counts (`InfoView.topology`).
+	Topology TopologyInfo `json:"topology"`
+
+	// UptimeSeconds Seconds since process start, or `None` if the start instant was never stamped.
+	UptimeSeconds *uint64 `json:"uptime_seconds"`
+
+	// Version busbar semantic version (`CARGO_PKG_VERSION`).
+	Version string `json:"version"`
+}
+
+// InstallPluginReq The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
+// bytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a
+// clean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the
+// running `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`
+// filename to store it under (storage only — identity comes from the signed manifest inside).
+type InstallPluginReq struct {
+	File       string `json:"file"`
+	TarballB64 string `json:"tarball_b64"`
+}
+
+// KeyMeteringView `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in
+// the `total` window; limits live on the bound group's own windows) plus the fraction of the
+// tightest `requests`/`tokens` limit across the group chain remaining (`null` = no such limit).
+type KeyMeteringView struct {
+	AsOf uint64 `json:"as_of"`
+
+	// BudgetPeriod Always `"total"` (the key attribution window).
+	BudgetPeriod string `json:"budget_period"`
+
+	// Group The bound `groups:` entry (`null` = unlimited key).
+	Group        *string  `json:"group"`
+	Id           string   `json:"id"`
+	RateHeadroom *float64 `json:"rate_headroom"`
+	Requests     uint64   `json:"requests"`
+	SpendCents   int64    `json:"spend_cents"`
+	Tokens       uint64   `json:"tokens"`
+
+	// WindowStart Always `0` (the all-time window start).
+	WindowStart uint64 `json:"window_start"`
+}
+
+// KeyPageView `GET /keys` — the cursor-paginated key list envelope (`{items, next_cursor}`, hand-rolled in the
+// keys handler rather than via `Page<T>`).
+type KeyPageView struct {
+	Items      []KeyView `json:"items"`
+	NextCursor *string   `json:"next_cursor"`
+}
+
+// KeyUsageView One key's row of the per-key aggregation: the key id/name (never the secret) + its counts.
+type KeyUsageView struct {
+	Id string `json:"id"`
+
+	// Name The key's display name; `None` when the key was deleted after metering accumulated (history
+	// outlives the key — the id still attributes it).
+	Name     *string `json:"name"`
+	Requests uint64  `json:"requests"`
+
+	// SpendMicros Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
+	// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token
+	// split x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate
+	// card's numbers are whatever unit the operator priced in; display/denomination is entirely
+	// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
+	// token split instead.
+	SpendMicros         int64  `json:"spend_micros"`
+	TokensCacheCreation uint64 `json:"tokens_cache_creation"`
+	TokensCacheRead     uint64 `json:"tokens_cache_read"`
+
+	// TokensInput Uncached input tokens (normalized additive-cache convention).
+	TokensInput  uint64 `json:"tokens_input"`
+	TokensOutput uint64 `json:"tokens_output"`
+}
+
+// KeyView Virtual-key metadata — the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
+// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
+// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools (C6); `group` names the
+// bound `groups:` entry (`null` = unlimited).
+type KeyView struct {
+	AllowedPools *[]string         `json:"allowed_pools"`
+	CreatedAt    uint64            `json:"created_at"`
+	Enabled      bool              `json:"enabled"`
+	Group        *string           `json:"group"`
+	Id           string            `json:"id"`
+	Labels       map[string]string `json:"labels"`
+	Name         string            `json:"name"`
+
+	// State E-007: `enabled` alone cannot distinguish a reversible pause from either of the two permanent
+	// dispositions — `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
+	// used to leave `enabled: false` with nothing else to tell them apart. One of exactly four
+	// values, additive and derived (never independently settable):
+	// - `"active"` — enabled, not revoked, not deleted.
+	// - `"disabled"` — `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
+	// - `"revoked"` — `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
+	//   `GET /keys/{id}`) stays live for audit/usage attribution.
+	// - `"tombstoned"` — `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
+	//   kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain
+	//   `GET /keys` by default; visible there with `?include=tombstoned`.
+	State string `json:"state"`
+}
+
+// LimitView One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a
+// config `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is
+// deserialize-only sugar; the read API projects it explicitly so a consumer never has to know
+// the metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no
+// window); `pool` is present only on a pool-scoped limit.
+type LimitView struct {
+	// Amount The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).
+	Amount uint64 `json:"amount"`
+
+	// DowngradeTo Where `on_exhaust: downgrade` sends exhausted traffic. Present iff downgrading.
+	DowngradeTo *string `json:"downgrade_to,omitempty"`
+
+	// Metric One of `requests` | `tokens` | `budget` | `concurrent`.
+	Metric string `json:"metric"`
+
+	// OnExhaust The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).
+	OnExhaust *string `json:"on_exhaust,omitempty"`
+
+	// Per The accounting window: `minute` | `hour` | `day` | `month` | `total`. Absent for `concurrent`.
+	Per *string `json:"per,omitempty"`
+
+	// Pool The pool scope: present when the limit carries `pool: <name>` (it accounts and enforces
+	// only that pool's traffic, per `(group, pool)`); absent for a group-wide limit.
+	Pool *string `json:"pool,omitempty"`
+}
+
+// ModelUsageView One (model, provider) row of the per-model aggregation.
+type ModelUsageView struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+	Requests uint64 `json:"requests"`
+
+	// SpendMicros Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
+	// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token
+	// split x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate
+	// card's numbers are whatever unit the operator priced in; display/denomination is entirely
+	// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
+	// token split instead.
+	SpendMicros         int64  `json:"spend_micros"`
+	TokensCacheCreation uint64 `json:"tokens_cache_creation"`
+	TokensCacheRead     uint64 `json:"tokens_cache_read"`
+
+	// TokensInput Uncached input tokens (normalized additive-cache convention).
+	TokensInput  uint64 `json:"tokens_input"`
+	TokensOutput uint64 `json:"tokens_output"`
+}
+
+// ModelView A model lane in the topology read (`GET /api/v1/admin/models`): the config key + its upstream
+// provider. No credentials, ever.
+type ModelView struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+}
+
+// OverlayResetView `DELETE /overlay/{section}` — per-section overlay reset result: the section reverted, the
+// resulting config version, and whether anything changed (`false` = the section had no overlay state,
+// an idempotent no-op).
+type OverlayResetView struct {
+	// Changed `true` when the reset discarded overlay mutations; `false` for an already-empty section.
+	Changed       bool   `json:"changed"`
+	ConfigVersion uint64 `json:"config_version"`
+
+	// Reset The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).
+	Reset string `json:"reset"`
+}
+
+// PageGroupView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PageGroupView struct {
+	Items      []GroupView `json:"items"`
+	NextCursor *string     `json:"next_cursor"`
+}
+
+// PageHookView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PageHookView struct {
+	Items      []HookView `json:"items"`
+	NextCursor *string    `json:"next_cursor"`
+}
+
+// PageModelView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PageModelView struct {
+	Items      []ModelView `json:"items"`
+	NextCursor *string     `json:"next_cursor"`
+}
+
+// PagePluginView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PagePluginView struct {
+	Items      []PluginView `json:"items"`
+	NextCursor *string      `json:"next_cursor"`
+}
+
+// PagePoolView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PagePoolView struct {
+	Items      []PoolView `json:"items"`
+	NextCursor *string    `json:"next_cursor"`
+}
+
+// PageProviderView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PageProviderView struct {
+	Items      []ProviderView `json:"items"`
+	NextCursor *string        `json:"next_cursor"`
+}
+
+// PatchSettingsReq The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match` (H3).
+type PatchSettingsReq struct {
+	Settings map[string]interface{} `json:"settings"`
+}
+
+// PluginInstallView The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The
+// engine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never
+// trusted), validated the ABI handshake, and atomically wrote the library (+ its manifest sidecar)
+// into the plugins directory. `active` takes effect on the next store (re)load — a store change
+// applies on restart / `store.module` apply, not as a hot swap (design: store install is
+// boot-time/config-apply). Additive-only; never a secret.
+type PluginInstallView struct {
+	// File The library FILENAME written into the plugins directory (the handle `DELETE` takes).
+	File string `json:"file"`
+
+	// InterfaceVersion The store C-ABI (`interface_version`) the engine validated the library against.
+	InterfaceVersion uint32 `json:"interface_version"`
+
+	// Name The plugin name from its manifest (or the filename when unsigned).
+	Name string `json:"name"`
+
+	// Note A human note: this install is durable in the folder but takes effect on the next store (re)load.
+	Note string `json:"note"`
+
+	// Publisher The manifest publisher, when signed.
+	Publisher *string `json:"publisher,omitempty"`
+
+	// Trust The server-side trust verdict from the RE-VERIFY: `"trusted"` | `"unverified"`. (A `"rejected"`
+	// verdict is an error, never a success body.)
+	Trust string `json:"trust"`
+
+	// Version The manifest version, when the upload carried a signed manifest.
+	Version *string `json:"version,omitempty"`
+}
+
+// PluginReloadView The result of re-scanning the plugins directory (`POST /api/v1/admin/plugins/reload`): the
+// current dynamic-library inventory, each with its ABI-validity. Reconciles the reported set to the
+// folder (the folder is the source of truth), exactly as `config/reload` reconciles config to disk.
+// A store change still applies on the next store (re)load, not as a hot swap.
+type PluginReloadView struct {
+	// Note A human note on when a store change actually takes effect.
+	Note string `json:"note"`
+
+	// Plugins The dynamic-library plugins now present in the directory, sorted by filename.
+	Plugins []PluginView `json:"plugins"`
+}
+
+// PluginRollbackReq The `POST /api/v1/admin/plugins/rollback` body: the target library FILENAME to roll DOWN to.
+type PluginRollbackReq struct {
+	// File The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.
+	File string `json:"file"`
+}
+
+// PluginRollbackView The result of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`, 1.5.0
+// rollback-friendly versioning): the operator deliberately pinned a plugin DOWN to a prior version and
+// the engine hot-swapped to that artifact. The pin is persisted (survives restart) and the trust
+// floor was lowered to EXACTLY the pinned version for THIS plugin — a lower artifact still cannot
+// load, and an automatic/silent replay of an old artifact is still refused (only this explicit,
+// audited action lowered the floor). Additive-only; never a secret.
+type PluginRollbackView struct {
+	// ConfigVersion The now-live config version after the hot swap (the ETag the response also carries).
+	ConfigVersion uint64 `json:"config_version"`
+
+	// File The library FILENAME the rollback selected in the plugins directory.
+	File string `json:"file"`
+
+	// Name The plugin's canonical manifest name that was pinned.
+	Name string `json:"name"`
+
+	// Note A human note on the rollback's semantics + durability.
+	Note string `json:"note"`
+
+	// Publisher The manifest publisher of the pinned artifact (`busbar` = first-party).
+	Publisher string `json:"publisher"`
+
+	// Version The version the plugin was pinned DOWN to (now serving), from the target artifact's manifest.
+	Version string `json:"version"`
+}
+
+// PluginSchemaView `GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]
+// (plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of
+// `{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest
+// precedence rule from context — the server always picks exactly one source and reports which.
+type PluginSchemaView struct {
+	Name string `json:"name"`
+
+	// Schema The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never
+	// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
+	// failed to parse.
+	Schema interface{} `json:"schema"`
+
+	// SchemaError Set only when the manifest's `settings_schema` was present but failed to parse as JSON —
+	// `null` for a manifest that genuinely never set the field. Never collapsed into a bare
+	// `schema: null` (question #3, round-4 correction): a present-but-corrupt schema is a real
+	// authoring/packaging bug, not "this plugin simply has none."
+	SchemaError *string `json:"schema_error"`
+
+	// Source `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
+	// message (the existing describe-proxy behavior, unchanged); `"manifest"` otherwise. Lets
+	// busbar-ui explain "why does this form look different from what I expected" without
+	// implementing the describe/manifest precedence rule itself (question #3, round-4
+	// correction).
+	Source string `json:"source"`
+
+	// Trust `"trusted" | "unverified" | "rejected"` — the same vocabulary the plugin catalog already
+	// uses (never `"verified"`; question #8, round-4 correction).
+	Trust string `json:"trust"`
+}
+
+// PluginView One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
+// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)
+// or a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed
+// plugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
+// retired 1.4.x socket/webhook "external" transport is gone). `active` is `Some(true/false)`
+// where activation is tracked (auth modules: in the chain?; hook plugins: configured = true;
+// dynamic store: the configured `store.module`) and `None` where it is a per-pool concern not
+// summarized here (compiled-in ranking policies). Additive-only.
+type PluginView struct {
+	// Active Whether the plugin is currently active, where tracked; `None` when activation is not summarized
+	// at this level.
+	Active *bool `json:"active"`
+
+	// Error Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.
+	Error *string `json:"error,omitempty"`
+
+	// File The artifact FILENAME in `plugins.dir` — the `{file}` path segment `DELETE
+	// /plugins/{file}` and `GET /plugins/{file}/schema` key off (E-003: a list row previously
+	// carried no field a client could feed straight back into either sibling endpoint; `target`
+	// is documented as the manifest NAME, not necessarily the on-disk filename, and is not a
+	// reliable substitute). `None` for compiled-in/external rows, which have no backing artifact
+	// to name. Additive; existing consumers reading only the pre-1.5.1 fields are unaffected.
+	File *string `json:"file,omitempty"`
+
+	// HasSchema `true` iff `GET /plugins/{file}/schema` would resolve this row's `file` to a manifest that
+	// declares `settings_schema` at all — i.e. iff `schema_url` below is non-null — so a plugin
+	// catalog can render which rows are configurable in one list call instead of a fetch per row
+	// (E-003). Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
+	// caller to null-check `schema_url` for the same fact. `false` for compiled-in/external rows
+	// (no manifest to carry a schema) and for a dynamic-library row whose manifest never set
+	// `settings_schema`. Additive.
+	HasSchema bool `json:"has_schema"`
+
+	// InterfaceVersion The store C-ABI (`interface_version`) the manifest declares (dynamic-library plugins with a
+	// manifest). Operator-facing name for the "ABI" the engine speaks.
+	InterfaceVersion *uint32 `json:"interface_version,omitempty"`
+
+	// Loader `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin — auth, hook, and store
+	// kinds alike as of 1.5.0's signed plugin ABI).
+	Loader string `json:"loader"`
+	Name   string `json:"name"`
+
+	// Publisher The manifest's declared publisher (dynamic-library plugins with a manifest).
+	Publisher *string `json:"publisher,omitempty"`
+
+	// SchemaError A manifest that SET `settings_schema` but whose value fails to parse (question #3's round-4
+	// correction, carried onto the list row too) — distinct from a manifest that never set the
+	// field at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in
+	// this case; the operator sees the row is degraded from the list alone, before ever following
+	// the URL.
+	SchemaError *string `json:"schema_error,omitempty"`
+
+	// SchemaUrl Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint (questions
+	// #10/#11 of plugin-settings-schema-SPEC.md) — ALWAYS a relative path under the admin origin
+	// (the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint
+	// only ever emits the admin-prefixed relative form, never anything else). Non-null whenever the
+	// manifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then
+	// surfaces `schema_error` — question #11, round-8 correction: a present-but-corrupt schema is a
+	// worse, distinct condition from "no schema declared", never folded into the same `null`).
+	// `null` for a compiled-in/external row (no manifest to carry a schema at all) and for any
+	// dynamic-library row whose manifest never set `settings_schema`.
+	SchemaUrl *string `json:"schema_url,omitempty"`
+
+	// Target For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x
+	// transport target). `None` for compiled-in.
+	Target *string `json:"target"`
+
+	// Trust The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running
+	// `plugins.trust` posture: `"trusted"` (signed by an allowlisted publisher), `"unverified"`
+	// (loaded but not verified — the posture permits it), or `"rejected"` (the `halt` posture would
+	// refuse it). `None` for compiled-in/external.
+	Trust *string `json:"trust,omitempty"`
+
+	// Type `"auth"`, `"hooks"`, or `"store"` — the plugin TYPE (each a distinct engine contract).
+	Type string `json:"type"`
+
+	// Valid For a dynamic-library plugin: whether the library validated as a busbar store plugin the engine
+	// can load (ABI handshake). `None` for compiled-in/external.
+	Valid *bool `json:"valid,omitempty"`
+
+	// Version The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).
+	// `None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.
+	Version *string `json:"version,omitempty"`
+}
+
+// PoolDetailView The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard
+// data: each member's breaker state, concurrency headroom, in-flight
+// count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
+// ranks on. No LLM content, no credentials.
+type PoolDetailView struct {
+	Members []PoolMemberStatusView `json:"members"`
+	Name    string                 `json:"name"`
+}
+
+// PoolMemberStatusView One member's live status within a pool. The breaker signal is the release-exposed
+// `usable`/`cooldown_remaining_seconds` pair (a lane in breaker cooldown reports `usable: false` with the
+// seconds remaining) — the same summary `/stats` surfaces.
+type PoolMemberStatusView struct {
+	// AvailableConcurrency Free concurrency slots on this lane right now (lane-global; permits are shared across pools).
+	AvailableConcurrency uint `json:"available_concurrency"`
+
+	// CooldownRemainingSeconds Seconds until a tripped breaker's cooldown elapses; `0` when not cooling down. (`_seconds`
+	// suffix — the one unit-suffix spelling across the surface, like `uptime_seconds`.)
+	CooldownRemainingSeconds uint64 `json:"cooldown_remaining_seconds"`
+
+	// Dead Whether the lane is hard-down/dead (distinct from a transiently-tripped breaker).
+	Dead bool   `json:"dead"`
+	Err  uint64 `json:"err"`
+
+	// Inflight In-flight requests on this lane right now.
+	Inflight int64 `json:"inflight"`
+
+	// LastTripAt Epoch seconds of the most recent trip; `None` = never tripped.
+	LastTripAt *uint64 `json:"last_trip_at"`
+
+	// LatencyMs Latency EWMA in milliseconds, or `None` if no sample yet.
+	LatencyMs *float64 `json:"latency_ms"`
+	Model     string   `json:"model"`
+
+	// Ok Successful and errored request tallies for this lane.
+	Ok uint64 `json:"ok"`
+
+	// TripCount MONOTONIC count of Closed→Open breaker trips on this lane. Breaker episodes are transient
+	// and can open+close entirely between two polls — a consumer alerting on trips diffs this
+	// count instead of trying to catch the live edge (audit #5). Carried across config apply and
+	// restart with the rest of the learned health.
+	TripCount uint64 `json:"trip_count"`
+
+	// Usable Whether the lane can currently take dispatch (breaker closed / recovered). `false` while a
+	// tripped breaker cools down or the lane is dead.
+	Usable bool   `json:"usable"`
+	Weight uint32 `json:"weight"`
+}
+
+// PoolMemberView One member of a pool: the model it targets and its SWRR weight.
+type PoolMemberView struct {
+	Model  string `json:"model"`
+	Weight uint32 `json:"weight"`
+}
+
+// PoolView A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
+// models and their weights. LIVE per-member status (breaker state, available concurrency, latency
+// EWMA, budget/rate headroom — design-admin-api-v1) is an additive follow-up; the field set
+// only grows.
+type PoolView struct {
+	Members []PoolMemberView `json:"members"`
+	Name    string           `json:"name"`
+}
+
+// ProviderView A provider in the topology read (`GET /api/v1/admin/providers`): the provider name + how many model
+// lanes route through it.
+type ProviderView struct {
+	ModelCount uint   `json:"model_count"`
+	Provider   string `json:"provider"`
+}
+
+// PutAuthBody The `PUT /api/v1/admin/admin-auth` body: the replacement admin auth chain.
+type PutAuthBody struct {
+	// AdminAuth The ordered admin auth module chain. Empty is the explicit open dev posture.
+	AdminAuth []string `json:"admin_auth"`
+}
+
+// RestartReq The `POST /api/v1/admin/restart` body. Absent is the same as `{}`.
+type RestartReq struct {
+	// Confirm Proceed even though no supervisor was detected. Exiting only restarts busbar if something
+	// restarts it; without this an undetected supervisor is refused rather than risking the
+	// gateway staying down.
+	Confirm *bool `json:"confirm,omitempty"`
+}
+
+// RestartView `POST /restart` — accepted-and-draining result.
+type RestartView struct {
+	Note       string `json:"note"`
+	Restarting bool   `json:"restarting"`
+
+	// SupervisorDetected Whether a process supervisor was detected. False means the caller confirmed explicitly.
+	SupervisorDetected bool `json:"supervisor_detected"`
+}
+
+// RevokeView `POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.
+type RevokeView struct {
+	// Revoked The id that was revoked (durably denylisted; the binding record remains).
+	Revoked string `json:"revoked"`
+}
+
+// RollbackReq The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match` (H3).
+type RollbackReq struct {
+	// Version The retained version to restore.
+	Version uint64 `json:"version"`
+}
+
+// RotatedKeyView `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
+// `token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every
+// prior token now rejected) or `secret` (a legacy hashed-secret key) is present.
+type RotatedKeyView struct {
+	AllowedPools *[]string `json:"allowed_pools"`
+	CreatedAt    uint64    `json:"created_at"`
+	Enabled      bool      `json:"enabled"`
+
+	// ExpiresAt Unix-seconds expiry of the re-minted signed token (present with `token`).
+	ExpiresAt *uint64           `json:"expires_at,omitempty"`
+	Group     *string           `json:"group"`
+	Id        string            `json:"id"`
+	Labels    map[string]string `json:"labels"`
+	Name      string            `json:"name"`
+
+	// Secret The fresh bearer secret — shown EXACTLY once (legacy hashed-secret keys only).
+	Secret *string `json:"secret,omitempty"`
+
+	// State E-007: same field as `KeyView.state` — rotate does not change `enabled`/revoked/tombstoned
+	// status, so this reflects whatever the key's disposition already was (rotating a `disabled` or
+	// `revoked` key is legal and leaves it exactly that; only a `tombstoned` key refuses to rotate,
+	// which surfaces as 404 instead of this response).
+	State string `json:"state"`
+
+	// Token The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).
+	Token *string `json:"token,omitempty"`
+}
+
+// SigningKeyRotateView `POST /signing-key/rotate` — the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
+// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
+type SigningKeyRotateView struct {
+	// CurrentKid The current signing-key id (`kid`) that tokens are minted under.
+	CurrentKid string `json:"current_kid"`
+
+	// Message Human-readable guidance for the operator-driven lockstep rotation.
+	Message string `json:"message"`
+
+	// RevokeAll Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).
+	RevokeAll bool `json:"revoke_all"`
+}
+
+// TopologyInfo Pool/model/provider counts (`InfoView.topology`).
+type TopologyInfo struct {
+	Models    uint `json:"models"`
+	Pools     uint `json:"pools"`
+	Providers uint `json:"providers"`
+}
+
+// UpdateKeyReq Partial update to an existing key. Keys are PURE AUTH (1.5.0, S1), so the mutable surface is
+// auth-shaped only. Every field is optional; only the present ones change. The credential, name,
+// allowed-pools, and labels are immutable here (rotate/recreate for those).
+//
+// `group` is THREE-STATE via serde double-option (`Option<Option<String>>`):
+// - absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.
+// - JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).
+// - a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).
+//
+// A single `Option<T>` could not tell absent from present-null, so a binding could never be
+// cleared once set. `enabled` is a plain `Option<bool>` (a bool has no clear state). The 1.4.x
+// cap fields (`rpm_limit`/`tpm_limit`/`max_budget_cents`) are GONE: limits live on the group.
+type UpdateKeyReq struct {
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Group Rebind or UNBIND the key's group. Absent = unchanged; `null` = unbind. The double `Option`
+	// is what distinguishes those two, so the schema describes it as a nullable string.
+	Group *string `json:"group,omitempty"`
+}
+
+// UsageBreakdown The raw consumption counts + the derived spend estimate — the one shape shared by `total`,
+// `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
+type UsageBreakdown struct {
+	Requests uint64 `json:"requests"`
+
+	// SpendMicros Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
+	// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token
+	// split x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate
+	// card's numbers are whatever unit the operator priced in; display/denomination is entirely
+	// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
+	// token split instead.
+	SpendMicros         int64  `json:"spend_micros"`
+	TokensCacheCreation uint64 `json:"tokens_cache_creation"`
+	TokensCacheRead     uint64 `json:"tokens_cache_read"`
+
+	// TokensInput Uncached input tokens (normalized additive-cache convention).
+	TokensInput  uint64 `json:"tokens_input"`
+	TokensOutput uint64 `json:"tokens_output"`
+}
+
+// UsageView defines model for UsageView.
+type UsageView struct {
+	// AsOf Freshness marker: the epoch this read was computed at (counters accumulate live).
+	AsOf uint64 `json:"as_of"`
+
+	// ByKey Per-key aggregation (same raw-split shape). CAPPED at the top 1000 rows by spend (the
+	// FinOps-relevant ordering); `by_key_truncated` says the cap fired — never a silent cut.
+	ByKey []KeyUsageView `json:"by_key"`
+
+	// ByKeyTruncated True when `by_key` was truncated to the cap (a deployment with more active keys than the
+	// cap). `by_model` is never capped (bounded by the configured model fleet).
+	ByKeyTruncated bool `json:"by_key_truncated"`
+
+	// ByModel Per-(model, provider) aggregation — cost attribution by model (the FinOps unit).
+	ByModel []ModelUsageView `json:"by_model"`
+
+	// Currency The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`, currently
+	// `"USD"`). A single-const source of truth so removal is one line. Emitted only here.
+	Currency string `json:"currency"`
+
+	// Others The summed remainder BEYOND the `by_key` cap — present exactly when `by_key_truncated`, so
+	// every unit of consumption is attributable at least to "others" (FinOps completeness:
+	// `total == sum(by_key) + others`).
+	Others *UsageBreakdown `json:"others,omitempty"`
+
+	// Total The raw consumption counts + the derived spend estimate — the one shape shared by `total`,
+	// `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
+	Total UsageBreakdown `json:"total"`
+
+	// Window The UTC-day metering bucket this response aggregates: `[start, end)` epoch seconds.
+	Window UsageWindow `json:"window"`
+}
+
+// UsageWindow A metering window: `[start, end)` epoch seconds.
+type UsageWindow struct {
+	End   uint64 `json:"end"`
+	Start uint64 `json:"start"`
+}
+
+// PutAdminAuthParams defines parameters for PutAdminAuth.
+type PutAdminAuthParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// GetApiV1AdminAuditParams defines parameters for GetApiV1AdminAudit.
-type GetApiV1AdminAuditParams struct {
+// GetAuditParams defines parameters for GetAudit.
+type GetAuditParams struct {
 	// Action Filter by exact action (e.g. `hook.register`)
 	Action *string `form:"action,omitempty" json:"action,omitempty"`
 
@@ -35,26 +1313,53 @@ type GetApiV1AdminAuditParams struct {
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
-// PostApiV1AdminConfigApplyParams defines parameters for PostApiV1AdminConfigApply.
-type PostApiV1AdminConfigApplyParams struct {
+// PostConfigApplyJSONBody defines parameters for PostConfigApply.
+type PostConfigApplyJSONBody struct {
+	// Config A `config.yaml` deploy block, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Config map[string]interface{} `json:"config"`
+
+	// Providers A `providers.yaml` document, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Providers *map[string]interface{} `json:"providers,omitempty"`
+}
+
+// PostConfigApplyParams defines parameters for PostConfigApply.
+type PostConfigApplyParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// GetApiV1AdminConfigDiffParams defines parameters for GetApiV1AdminConfigDiff.
-type GetApiV1AdminConfigDiffParams struct {
+// GetConfigDiffParams defines parameters for GetConfigDiff.
+type GetConfigDiffParams struct {
 	From int `form:"from" json:"from"`
 	To   int `form:"to" json:"to"`
 }
 
-// PostApiV1AdminConfigRollbackParams defines parameters for PostApiV1AdminConfigRollback.
-type PostApiV1AdminConfigRollbackParams struct {
+// PostConfigRollbackParams defines parameters for PostConfigRollback.
+type PostConfigRollbackParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// GetApiV1AdminConfigVersionsParams defines parameters for GetApiV1AdminConfigVersions.
-type GetApiV1AdminConfigVersionsParams struct {
+// PutConfigSettingsJSONBody defines parameters for PutConfigSettings.
+type PutConfigSettingsJSONBody map[string]interface{}
+
+// PutConfigSettingsParams defines parameters for PutConfigSettings.
+type PutConfigSettingsParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PostConfigValidateJSONBody defines parameters for PostConfigValidate.
+type PostConfigValidateJSONBody struct {
+	// Config A `config.yaml` deploy block, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Config map[string]interface{} `json:"config"`
+
+	// Providers A `providers.yaml` document, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Providers *map[string]interface{} `json:"providers,omitempty"`
+}
+
+// GetConfigVersionsParams defines parameters for GetConfigVersions.
+type GetConfigVersionsParams struct {
 	// Limit Page size (default 100, max 1000)
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
 
@@ -62,74 +1367,209 @@ type GetApiV1AdminConfigVersionsParams struct {
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
-// PostApiV1AdminHooksParams defines parameters for PostApiV1AdminHooks.
-type PostApiV1AdminHooksParams struct {
+// PostGroupsJSONBody defines parameters for PostGroups.
+type PostGroupsJSONBody struct {
+	// Config A `groups:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Config map[string]interface{} `json:"config"`
+
+	// Name The group name.
+	Name string `json:"name"`
+}
+
+// PostGroupsParams defines parameters for PostGroups.
+type PostGroupsParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// DeleteApiV1AdminHooksNameParams defines parameters for DeleteApiV1AdminHooksName.
-type DeleteApiV1AdminHooksNameParams struct {
+// DeleteGroupsNameParams defines parameters for DeleteGroupsName.
+type DeleteGroupsNameParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// PutApiV1AdminHooksNameParams defines parameters for PutApiV1AdminHooksName.
-type PutApiV1AdminHooksNameParams struct {
+// PatchGroupsNameJSONBody defines parameters for PatchGroupsName.
+type PatchGroupsNameJSONBody struct {
+	// ChildDefault A `child_default:` template. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	ChildDefault *map[string]interface{}   `json:"child_default,omitempty"`
+	Enabled      *bool                     `json:"enabled,omitempty"`
+	Limits       *[]map[string]interface{} `json:"limits,omitempty"`
+	Parent       *string                   `json:"parent,omitempty"`
+}
+
+// PatchGroupsNameParams defines parameters for PatchGroupsName.
+type PatchGroupsNameParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// PatchApiV1AdminHooksNameSettingsParams defines parameters for PatchApiV1AdminHooksNameSettings.
-type PatchApiV1AdminHooksNameSettingsParams struct {
+// PutGroupsNameJSONBody defines parameters for PutGroupsName.
+type PutGroupsNameJSONBody struct {
+	// Config A `groups:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Config map[string]interface{} `json:"config"`
+}
+
+// PutGroupsNameParams defines parameters for PutGroupsName.
+type PutGroupsNameParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// GetApiV1AdminKeysParams defines parameters for GetApiV1AdminKeys.
-type GetApiV1AdminKeysParams struct {
+// PostHooksJSONBody defines parameters for PostHooks.
+type PostHooksJSONBody struct {
+	// Config A `hooks:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Config map[string]interface{} `json:"config"`
+
+	// Name The hook name.
+	Name string `json:"name"`
+}
+
+// PostHooksParams defines parameters for PostHooks.
+type PostHooksParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// DeleteHooksNameParams defines parameters for DeleteHooksName.
+type DeleteHooksNameParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PutHooksNameJSONBody defines parameters for PutHooksName.
+type PutHooksNameJSONBody struct {
+	// Config A `hooks:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.
+	Config map[string]interface{} `json:"config"`
+}
+
+// PutHooksNameParams defines parameters for PutHooksName.
+type PutHooksNameParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchHooksNameSettingsParams defines parameters for PatchHooksNameSettings.
+type PatchHooksNameSettingsParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// GetKeysParams defines parameters for GetKeys.
+type GetKeysParams struct {
 	// Enabled Filter by enabled state (`true`|`false`)
 	Enabled *string `form:"enabled,omitempty" json:"enabled,omitempty"`
 
 	// Prefix Filter by key-id prefix
 	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// Group Filter by bound group (a `user:<sub>` leaf's keys are one person's)
+	Group *string `form:"group,omitempty" json:"group,omitempty"`
+
 	// Limit Page size (default 200, max 1000)
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque continuation cursor from `next_cursor`
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Include E-007: set to `tombstoned` to include hard-deleted keys, which are otherwise omitted (each row's `state` reads `"tombstoned"`)
+	Include *string `form:"include,omitempty" json:"include,omitempty"`
 }
 
-// DeleteApiV1AdminKeysIdParams defines parameters for DeleteApiV1AdminKeysId.
-type DeleteApiV1AdminKeysIdParams struct {
+// DeleteKeysIdParams defines parameters for DeleteKeysId.
+type DeleteKeysIdParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// PatchApiV1AdminKeysIdParams defines parameters for PatchApiV1AdminKeysId.
-type PatchApiV1AdminKeysIdParams struct {
+// PatchKeysIdParams defines parameters for PatchKeysId.
+type PatchKeysIdParams struct {
 	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
-// GetApiV1AdminPluginsParams defines parameters for GetApiV1AdminPlugins.
-type GetApiV1AdminPluginsParams struct {
-	// Type Plugin type: `auth` | `hooks` (required)
+// DeleteOverlaySectionParams defines parameters for DeleteOverlaySection.
+type DeleteOverlaySectionParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// DeleteOverlaySectionParamsSection defines parameters for DeleteOverlaySection.
+type DeleteOverlaySectionParamsSection string
+
+// GetPluginsParams defines parameters for GetPlugins.
+type GetPluginsParams struct {
+	// Type Plugin type: `auth` | `hooks` | `store` (required)
 	Type string `form:"type" json:"type"`
 }
 
-// GetApiV1AdminPoolsParams defines parameters for GetApiV1AdminPools.
-type GetApiV1AdminPoolsParams struct {
+// PostPluginsRollbackParams defines parameters for PostPluginsRollback.
+type PostPluginsRollbackParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// GetPoolsParams defines parameters for GetPools.
+type GetPoolsParams struct {
 	// Detail `true` inlines each member's live status (same row shape as /pools/{name})
 	Detail *string `form:"detail,omitempty" json:"detail,omitempty"`
 }
 
-// GetApiV1AdminUsageParams defines parameters for GetApiV1AdminUsage.
-type GetApiV1AdminUsageParams struct {
+// GetUsageParams defines parameters for GetUsage.
+type GetUsageParams struct {
 	// Window A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate — bill from the raw token split, never store spend_micros as a ledger charge
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
 }
+
+// PutAdminAuthJSONRequestBody defines body for PutAdminAuth for application/json ContentType.
+type PutAdminAuthJSONRequestBody = PutAuthBody
+
+// PostAuthCacheFlushJSONRequestBody defines body for PostAuthCacheFlush for application/json ContentType.
+type PostAuthCacheFlushJSONRequestBody = FlushCacheReq
+
+// PostConfigApplyJSONRequestBody defines body for PostConfigApply for application/json ContentType.
+type PostConfigApplyJSONRequestBody PostConfigApplyJSONBody
+
+// PostConfigRollbackJSONRequestBody defines body for PostConfigRollback for application/json ContentType.
+type PostConfigRollbackJSONRequestBody = RollbackReq
+
+// PutConfigSettingsJSONRequestBody defines body for PutConfigSettings for application/json ContentType.
+type PutConfigSettingsJSONRequestBody PutConfigSettingsJSONBody
+
+// PostConfigValidateJSONRequestBody defines body for PostConfigValidate for application/json ContentType.
+type PostConfigValidateJSONRequestBody PostConfigValidateJSONBody
+
+// PostGroupsJSONRequestBody defines body for PostGroups for application/json ContentType.
+type PostGroupsJSONRequestBody PostGroupsJSONBody
+
+// PatchGroupsNameJSONRequestBody defines body for PatchGroupsName for application/json ContentType.
+type PatchGroupsNameJSONRequestBody PatchGroupsNameJSONBody
+
+// PutGroupsNameJSONRequestBody defines body for PutGroupsName for application/json ContentType.
+type PutGroupsNameJSONRequestBody PutGroupsNameJSONBody
+
+// PostHooksJSONRequestBody defines body for PostHooks for application/json ContentType.
+type PostHooksJSONRequestBody PostHooksJSONBody
+
+// PutHooksNameJSONRequestBody defines body for PutHooksName for application/json ContentType.
+type PutHooksNameJSONRequestBody PutHooksNameJSONBody
+
+// PatchHooksNameSettingsJSONRequestBody defines body for PatchHooksNameSettings for application/json ContentType.
+type PatchHooksNameSettingsJSONRequestBody = PatchSettingsReq
+
+// PostKeysJSONRequestBody defines body for PostKeys for application/json ContentType.
+type PostKeysJSONRequestBody = CreateKeyReq
+
+// PatchKeysIdJSONRequestBody defines body for PatchKeysId for application/json ContentType.
+type PatchKeysIdJSONRequestBody = UpdateKeyReq
+
+// PostPluginsJSONRequestBody defines body for PostPlugins for application/json ContentType.
+type PostPluginsJSONRequestBody = InstallPluginReq
+
+// PostPluginsRollbackJSONRequestBody defines body for PostPluginsRollback for application/json ContentType.
+type PostPluginsRollbackJSONRequestBody = PluginRollbackReq
+
+// PostRestartJSONRequestBody defines body for PostRestart for application/json ContentType.
+type PostRestartJSONRequestBody = RestartReq
 
 // RequestEditorFn is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -205,197 +1645,440 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 // The interface specification for the client above.
 type ClientInterface interface {
 
-	// GetApiV1AdminAdminAuth Admin-plane auth config (the admin surface guard)
+	// GetAdminAuth Admin-plane auth config (the admin surface guard)
 	//
-	// Corresponds with GET /api/v1/admin/admin-auth (the `GetApiV1AdminAdminAuth` operationId).
-	GetApiV1AdminAdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/admin-auth (the `GetAdminAuth` operationId).
+	GetAdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutApiV1AdminAdminAuth Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+	// PutAdminAuthWithBody Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
-	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutApiV1AdminAdminAuth` operationId).
-	PutApiV1AdminAdminAuth(ctx context.Context, params *PutApiV1AdminAdminAuthParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+	PutAdminAuthWithBody(ctx context.Context, params *PutAdminAuthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminAudit Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+	// PutAdminAuth Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
-	// Corresponds with GET /api/v1/admin/audit (the `GetApiV1AdminAudit` operationId).
-	GetApiV1AdminAudit(ctx context.Context, params *GetApiV1AdminAuditParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+	PutAdminAuth(ctx context.Context, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminAuth Ingress auth chain + upstream-credential mode
+	// GetAudit Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 	//
-	// Corresponds with GET /api/v1/admin/auth (the `GetApiV1AdminAuth` operationId).
-	GetApiV1AdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/audit (the `GetAudit` operationId).
+	GetAudit(ctx context.Context, params *GetAuditParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminAuthCacheFlush Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+	// GetAuth Ingress auth chain + upstream-credential mode
 	//
-	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostApiV1AdminAuthCacheFlush` operationId).
-	PostApiV1AdminAuthCacheFlush(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/auth (the `GetAuth` operationId).
+	GetAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminConfig Effective running config snapshot (redacted)
+	// PostAuthCacheFlushWithBody Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
-	// Corresponds with GET /api/v1/admin/config (the `GetApiV1AdminConfig` operationId).
-	GetApiV1AdminConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+	PostAuthCacheFlushWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminConfigApply Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
+	// PostAuthCacheFlush Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
-	// Corresponds with POST /api/v1/admin/config/apply (the `PostApiV1AdminConfigApply` operationId).
-	PostApiV1AdminConfigApply(ctx context.Context, params *PostApiV1AdminConfigApplyParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+	PostAuthCacheFlush(ctx context.Context, body PostAuthCacheFlushJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminConfigDiff Structured hook-surface diff between two retained versions
+	// GetConfig Effective running config snapshot (redacted)
 	//
-	// Corresponds with GET /api/v1/admin/config/diff (the `GetApiV1AdminConfigDiff` operationId).
-	GetApiV1AdminConfigDiff(ctx context.Context, params *GetApiV1AdminConfigDiffParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/config (the `GetConfig` operationId).
+	GetConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminConfigReload Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
+	// PostConfigApplyWithBody Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
 	//
-	// Corresponds with POST /api/v1/admin/config/reload (the `PostApiV1AdminConfigReload` operationId).
-	PostApiV1AdminConfigReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+	PostConfigApplyWithBody(ctx context.Context, params *PostConfigApplyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminConfigRollback Restore a retained version's hook surface (re-validated; a NEW version)
+	// PostConfigApply Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
 	//
-	// Corresponds with POST /api/v1/admin/config/rollback (the `PostApiV1AdminConfigRollback` operationId).
-	PostApiV1AdminConfigRollback(ctx context.Context, params *PostApiV1AdminConfigRollbackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+	PostConfigApply(ctx context.Context, params *PostConfigApplyParams, body PostConfigApplyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminConfigValidate Dry-run validate a proposed config
+	// GetConfigDiff Structured hook-surface diff between two retained versions
 	//
-	// Corresponds with POST /api/v1/admin/config/validate (the `PostApiV1AdminConfigValidate` operationId).
-	PostApiV1AdminConfigValidate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/config/diff (the `GetConfigDiff` operationId).
+	GetConfigDiff(ctx context.Context, params *GetConfigDiffParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminConfigVersions Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+	// PostConfigReload Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
 	//
-	// Corresponds with GET /api/v1/admin/config/versions (the `GetApiV1AdminConfigVersions` operationId).
-	GetApiV1AdminConfigVersions(ctx context.Context, params *GetApiV1AdminConfigVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with POST /api/v1/admin/config/reload (the `PostConfigReload` operationId).
+	PostConfigReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminConfigVersionsV One retained config version, with its hook-surface snapshot
+	// PostConfigRollbackWithBody Restore a retained version's hook surface (re-validated; a NEW version)
 	//
-	// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetApiV1AdminConfigVersionsV` operationId).
-	GetApiV1AdminConfigVersionsV(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+	PostConfigRollbackWithBody(ctx context.Context, params *PostConfigRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminHooks Hook registry (definitions)
+	// PostConfigRollback Restore a retained version's hook surface (re-validated; a NEW version)
 	//
-	// Corresponds with GET /api/v1/admin/hooks (the `GetApiV1AdminHooks` operationId).
-	GetApiV1AdminHooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+	PostConfigRollback(ctx context.Context, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminHooks Register (or replace) a hook at runtime — live immediately
+	// GetConfigSettings Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
 	//
-	// Corresponds with POST /api/v1/admin/hooks (the `PostApiV1AdminHooks` operationId).
-	PostApiV1AdminHooks(ctx context.Context, params *PostApiV1AdminHooksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
+	GetConfigSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteApiV1AdminHooksName Remove a hook at runtime — live immediately
+	// PutConfigSettingsWithBody SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
-	// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteApiV1AdminHooksName` operationId).
-	DeleteApiV1AdminHooksName(ctx context.Context, name string, params *DeleteApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+	PutConfigSettingsWithBody(ctx context.Context, params *PutConfigSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminHooksName One hook definition
+	// PutConfigSettings SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetApiV1AdminHooksName` operationId).
-	GetApiV1AdminHooksName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+	PutConfigSettings(ctx context.Context, params *PutConfigSettingsParams, body PutConfigSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutApiV1AdminHooksName Replace an overlay hook definition — live immediately (grants immutable)
+	// PostConfigValidateWithBody Dry-run validate a proposed config
 	//
-	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutApiV1AdminHooksName` operationId).
-	PutApiV1AdminHooksName(ctx context.Context, name string, params *PutApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+	PostConfigValidateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminHooksNameHealth Best-effort hook transport reachability
+	// PostConfigValidate Dry-run validate a proposed config
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetApiV1AdminHooksNameHealth` operationId).
-	GetApiV1AdminHooksNameHealth(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+	PostConfigValidate(ctx context.Context, body PostConfigValidateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminHooksNameSchema The hook's self-described settings JSON Schema (describe proxy)
+	// GetConfigVersions Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetApiV1AdminHooksNameSchema` operationId).
-	GetApiV1AdminHooksNameSchema(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/config/versions (the `GetConfigVersions` operationId).
+	GetConfigVersions(ctx context.Context, params *GetConfigVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchApiV1AdminHooksNameSettings Push an opaque settings map to the running hook; COMMIT ON ACK
+	// GetConfigVersionsV One retained config version, with its hook-surface snapshot
 	//
-	// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchApiV1AdminHooksNameSettings` operationId).
-	PatchApiV1AdminHooksNameSettings(ctx context.Context, name string, params *PatchApiV1AdminHooksNameSettingsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetConfigVersionsV` operationId).
+	GetConfigVersionsV(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminHooksNameStatus The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+	// GetGroups Group registry — the limit tree (parent chain, limits, child_default budget template)
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetApiV1AdminHooksNameStatus` operationId).
-	GetApiV1AdminHooksNameStatus(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
+	GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminInfo Version, compiled-in plugin proof, uptime, topology
+	// PostGroupsWithBody Create (or replace) a group at runtime — live immediately (upsert)
 	//
-	// Corresponds with GET /api/v1/admin/info (the `GetApiV1AdminInfo` operationId).
-	GetApiV1AdminInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+	PostGroupsWithBody(ctx context.Context, params *PostGroupsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)
+	// PostGroups Create (or replace) a group at runtime — live immediately (upsert)
 	//
-	// Corresponds with GET /api/v1/admin/keys (the `GetApiV1AdminKeys` operationId).
-	GetApiV1AdminKeys(ctx context.Context, params *GetApiV1AdminKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+	PostGroups(ctx context.Context, params *PostGroupsParams, body PostGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminKeys Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+	// DeleteGroupsName Remove an overlay group at runtime — live immediately
 	//
-	// Corresponds with POST /api/v1/admin/keys (the `PostApiV1AdminKeys` operationId).
-	PostApiV1AdminKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with DELETE /api/v1/admin/groups/{name} (the `DeleteGroupsName` operationId).
+	DeleteGroupsName(ctx context.Context, name string, params *DeleteGroupsNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteApiV1AdminKeysId Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+	// GetGroupsName One group definition (parent, enabled, limits, child_default)
 	//
-	// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteApiV1AdminKeysId` operationId).
-	DeleteApiV1AdminKeysId(ctx context.Context, id string, params *DeleteApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/groups/{name} (the `GetGroupsName` operationId).
+	GetGroupsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminKeysId One key's metadata + `ETag` (never the secret/hash)
+	// PatchGroupsNameWithBody Partial update — change only the fields present (e.g. raise a budget, freeze a group)
 	//
-	// Corresponds with GET /api/v1/admin/keys/{id} (the `GetApiV1AdminKeysId` operationId).
-	GetApiV1AdminKeysId(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+	PatchGroupsNameWithBody(ctx context.Context, name string, params *PatchGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchApiV1AdminKeysId Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency
+	// PatchGroupsName Partial update — change only the fields present (e.g. raise a budget, freeze a group)
 	//
-	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchApiV1AdminKeysId` operationId).
-	PatchApiV1AdminKeysId(ctx context.Context, id string, params *PatchApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+	PatchGroupsName(ctx context.Context, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostApiV1AdminKeysIdRotate Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+	// PutGroupsNameWithBody Replace an overlay group definition — live immediately (limits rebuilt)
 	//
-	// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostApiV1AdminKeysIdRotate` operationId).
-	PostApiV1AdminKeysIdRotate(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+	PutGroupsNameWithBody(ctx context.Context, name string, params *PutGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminKeysIdUsage Current-window usage for one key (spend / tokens / requests)
+	// PutGroupsName Replace an overlay group definition — live immediately (limits rebuilt)
 	//
-	// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetApiV1AdminKeysIdUsage` operationId).
-	GetApiV1AdminKeysIdUsage(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+	PutGroupsName(ctx context.Context, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminModels Model lanes + upstream providers
+	// GetGroupsNameUsage The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 	//
-	// Corresponds with GET /api/v1/admin/models (the `GetApiV1AdminModels` operationId).
-	GetApiV1AdminModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/groups/{name}/usage (the `GetGroupsNameUsage` operationId).
+	GetGroupsNameUsage(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminOpenapiJson This OpenAPI 3.1 document
+	// GetHooks Hook registry (definitions)
 	//
-	// Corresponds with GET /api/v1/admin/openapi.json (the `GetApiV1AdminOpenapiJson` operationId).
-	GetApiV1AdminOpenapiJson(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/hooks (the `GetHooks` operationId).
+	GetHooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminPlugins Plugin catalog by type (compiled-in + external)
+	// PostHooksWithBody Register (or replace) a hook at runtime — live immediately
 	//
-	// Corresponds with GET /api/v1/admin/plugins (the `GetApiV1AdminPlugins` operationId).
-	GetApiV1AdminPlugins(ctx context.Context, params *GetApiV1AdminPluginsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+	PostHooksWithBody(ctx context.Context, params *PostHooksParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminPools Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+	// PostHooks Register (or replace) a hook at runtime — live immediately
 	//
-	// Corresponds with GET /api/v1/admin/pools (the `GetApiV1AdminPools` operationId).
-	GetApiV1AdminPools(ctx context.Context, params *GetApiV1AdminPoolsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+	PostHooks(ctx context.Context, params *PostHooksParams, body PostHooksJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminPoolsName Live per-member status of one pool (breaker/concurrency/latency)
+	// DeleteHooksName Remove a hook at runtime — live immediately
 	//
-	// Corresponds with GET /api/v1/admin/pools/{name} (the `GetApiV1AdminPoolsName` operationId).
-	GetApiV1AdminPoolsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteHooksName` operationId).
+	DeleteHooksName(ctx context.Context, name string, params *DeleteHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminProviders Distinct providers + lane counts
+	// GetHooksName One hook definition
 	//
-	// Corresponds with GET /api/v1/admin/providers (the `GetApiV1AdminProviders` operationId).
-	GetApiV1AdminProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetHooksName` operationId).
+	GetHooksName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1AdminUsage Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+	// PutHooksNameWithBody Replace an overlay hook definition — live immediately (grants immutable)
 	//
-	// Corresponds with GET /api/v1/admin/usage (the `GetApiV1AdminUsage` operationId).
-	GetApiV1AdminUsage(ctx context.Context, params *GetApiV1AdminUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+	PutHooksNameWithBody(ctx context.Context, name string, params *PutHooksNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutHooksName Replace an overlay hook definition — live immediately (grants immutable)
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+	PutHooksName(ctx context.Context, name string, params *PutHooksNameParams, body PutHooksNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHooksNameHealth Best-effort hook transport reachability
+	//
+	// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetHooksNameHealth` operationId).
+	GetHooksNameHealth(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHooksNameSchema The hook's self-described settings JSON Schema (describe proxy)
+	//
+	// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetHooksNameSchema` operationId).
+	GetHooksNameSchema(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchHooksNameSettingsWithBody Push an opaque settings map to the running hook; COMMIT ON ACK
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+	PatchHooksNameSettingsWithBody(ctx context.Context, name string, params *PatchHooksNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchHooksNameSettings Push an opaque settings map to the running hook; COMMIT ON ACK
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+	PatchHooksNameSettings(ctx context.Context, name string, params *PatchHooksNameSettingsParams, body PatchHooksNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHooksNameStatus The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+	//
+	// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetHooksNameStatus` operationId).
+	GetHooksNameStatus(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInfo Version, compiled-in plugin proof, uptime, topology
+	//
+	// Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
+	GetInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+	//
+	// Corresponds with GET /api/v1/admin/keys (the `GetKeys` operationId).
+	GetKeys(ctx context.Context, params *GetKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostKeysWithBody Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+	PostKeysWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostKeys Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+	PostKeys(ctx context.Context, body PostKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteKeysId Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+	//
+	// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteKeysId` operationId).
+	DeleteKeysId(ctx context.Context, id string, params *DeleteKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetKeysId One key's metadata + `ETag` (never the secret/hash)
+	//
+	// Corresponds with GET /api/v1/admin/keys/{id} (the `GetKeysId` operationId).
+	GetKeysId(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchKeysIdWithBody Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+	PatchKeysIdWithBody(ctx context.Context, id string, params *PatchKeysIdParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchKeysId Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+	PatchKeysId(ctx context.Context, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostKeysIdRevoke REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+	//
+	// Corresponds with POST /api/v1/admin/keys/{id}/revoke (the `PostKeysIdRevoke` operationId).
+	PostKeysIdRevoke(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostKeysIdRotate Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+	//
+	// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostKeysIdRotate` operationId).
+	PostKeysIdRotate(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetKeysIdUsage Current-window usage for one key (spend / tokens / requests)
+	//
+	// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetKeysIdUsage` operationId).
+	GetKeysIdUsage(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetModels Model lanes + upstream providers
+	//
+	// Corresponds with GET /api/v1/admin/models (the `GetModels` operationId).
+	GetModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetOpenapiJson This OpenAPI 3.1 document
+	//
+	// Corresponds with GET /api/v1/admin/openapi.json (the `GetOpenapiJson` operationId).
+	GetOpenapiJson(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteOverlaySection DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+	//
+	// Corresponds with DELETE /api/v1/admin/overlay/{section} (the `DeleteOverlaySection` operationId).
+	DeleteOverlaySection(ctx context.Context, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPlugins Plugin catalog by type (compiled-in + external + dynamic-library)
+	//
+	// Corresponds with GET /api/v1/admin/plugins (the `GetPlugins` operationId).
+	GetPlugins(ctx context.Context, params *GetPluginsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPluginsWithBody Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+	PostPluginsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPlugins Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+	PostPlugins(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPluginsReload Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
+	//
+	// Corresponds with POST /api/v1/admin/plugins/reload (the `PostPluginsReload` operationId).
+	PostPluginsReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPluginsRollbackWithBody EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+	PostPluginsRollbackWithBody(ctx context.Context, params *PostPluginsRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPluginsRollback EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+	PostPluginsRollback(ctx context.Context, params *PostPluginsRollbackParams, body PostPluginsRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeletePluginsFile Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load
+	//
+	// Corresponds with DELETE /api/v1/admin/plugins/{file} (the `DeletePluginsFile` operationId).
+	DeletePluginsFile(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPluginsFileSchema The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+	//
+	// Corresponds with GET /api/v1/admin/plugins/{file}/schema (the `GetPluginsFileSchema` operationId).
+	GetPluginsFileSchema(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPools Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+	//
+	// Corresponds with GET /api/v1/admin/pools (the `GetPools` operationId).
+	GetPools(ctx context.Context, params *GetPoolsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPoolsName Live per-member status of one pool (breaker/concurrency/latency)
+	//
+	// Corresponds with GET /api/v1/admin/pools/{name} (the `GetPoolsName` operationId).
+	GetPoolsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetProviders Distinct providers + lane counts
+	//
+	// Corresponds with GET /api/v1/admin/providers (the `GetProviders` operationId).
+	GetProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostRestartWithBody Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+	PostRestartWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostRestart Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+	PostRestart(ctx context.Context, body PostRestartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSigningKeyRotate ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+	//
+	// Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
+	PostSigningKeyRotate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetUsage Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+	//
+	// Corresponds with GET /api/v1/admin/usage (the `GetUsage` operationId).
+	GetUsage(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
-// GetApiV1AdminAdminAuth Admin-plane auth config (the admin surface guard)
+// GetAdminAuth Admin-plane auth config (the admin surface guard)
 //
-// Corresponds with GET /api/v1/admin/admin-auth (the `GetApiV1AdminAdminAuth` operationId).
-func (c *Client) GetApiV1AdminAdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminAdminAuthRequest(c.Server)
+// Corresponds with GET /api/v1/admin/admin-auth (the `GetAdminAuth` operationId).
+func (c *Client) GetAdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAdminAuthRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -406,11 +2089,13 @@ func (c *Client) GetApiV1AdminAdminAuth(ctx context.Context, reqEditors ...Reque
 	return c.Client.Do(req)
 }
 
-// PutApiV1AdminAdminAuth Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+// PutAdminAuthWithBody Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 //
-// Corresponds with PUT /api/v1/admin/admin-auth (the `PutApiV1AdminAdminAuth` operationId).
-func (c *Client) PutApiV1AdminAdminAuth(ctx context.Context, params *PutApiV1AdminAdminAuthParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPutApiV1AdminAdminAuthRequest(c.Server, params)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+func (c *Client) PutAdminAuthWithBody(ctx context.Context, params *PutAdminAuthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutAdminAuthRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -421,11 +2106,13 @@ func (c *Client) PutApiV1AdminAdminAuth(ctx context.Context, params *PutApiV1Adm
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminAudit Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+// PutAdminAuth Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 //
-// Corresponds with GET /api/v1/admin/audit (the `GetApiV1AdminAudit` operationId).
-func (c *Client) GetApiV1AdminAudit(ctx context.Context, params *GetApiV1AdminAuditParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminAuditRequest(c.Server, params)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+func (c *Client) PutAdminAuth(ctx context.Context, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutAdminAuthRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -436,11 +2123,11 @@ func (c *Client) GetApiV1AdminAudit(ctx context.Context, params *GetApiV1AdminAu
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminAuth Ingress auth chain + upstream-credential mode
+// GetAudit Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 //
-// Corresponds with GET /api/v1/admin/auth (the `GetApiV1AdminAuth` operationId).
-func (c *Client) GetApiV1AdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminAuthRequest(c.Server)
+// Corresponds with GET /api/v1/admin/audit (the `GetAudit` operationId).
+func (c *Client) GetAudit(ctx context.Context, params *GetAuditParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAuditRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -451,11 +2138,11 @@ func (c *Client) GetApiV1AdminAuth(ctx context.Context, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminAuthCacheFlush Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+// GetAuth Ingress auth chain + upstream-credential mode
 //
-// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostApiV1AdminAuthCacheFlush` operationId).
-func (c *Client) PostApiV1AdminAuthCacheFlush(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminAuthCacheFlushRequest(c.Server)
+// Corresponds with GET /api/v1/admin/auth (the `GetAuth` operationId).
+func (c *Client) GetAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAuthRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -466,11 +2153,13 @@ func (c *Client) PostApiV1AdminAuthCacheFlush(ctx context.Context, reqEditors ..
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminConfig Effective running config snapshot (redacted)
+// PostAuthCacheFlushWithBody Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 //
-// Corresponds with GET /api/v1/admin/config (the `GetApiV1AdminConfig` operationId).
-func (c *Client) GetApiV1AdminConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminConfigRequest(c.Server)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+func (c *Client) PostAuthCacheFlushWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostAuthCacheFlushRequestWithBody(c.Server, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -481,11 +2170,13 @@ func (c *Client) GetApiV1AdminConfig(ctx context.Context, reqEditors ...RequestE
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminConfigApply Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
+// PostAuthCacheFlush Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 //
-// Corresponds with POST /api/v1/admin/config/apply (the `PostApiV1AdminConfigApply` operationId).
-func (c *Client) PostApiV1AdminConfigApply(ctx context.Context, params *PostApiV1AdminConfigApplyParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminConfigApplyRequest(c.Server, params)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+func (c *Client) PostAuthCacheFlush(ctx context.Context, body PostAuthCacheFlushJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostAuthCacheFlushRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -496,11 +2187,11 @@ func (c *Client) PostApiV1AdminConfigApply(ctx context.Context, params *PostApiV
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminConfigDiff Structured hook-surface diff between two retained versions
+// GetConfig Effective running config snapshot (redacted)
 //
-// Corresponds with GET /api/v1/admin/config/diff (the `GetApiV1AdminConfigDiff` operationId).
-func (c *Client) GetApiV1AdminConfigDiff(ctx context.Context, params *GetApiV1AdminConfigDiffParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminConfigDiffRequest(c.Server, params)
+// Corresponds with GET /api/v1/admin/config (the `GetConfig` operationId).
+func (c *Client) GetConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConfigRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -511,11 +2202,13 @@ func (c *Client) GetApiV1AdminConfigDiff(ctx context.Context, params *GetApiV1Ad
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminConfigReload Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
+// PostConfigApplyWithBody Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
 //
-// Corresponds with POST /api/v1/admin/config/reload (the `PostApiV1AdminConfigReload` operationId).
-func (c *Client) PostApiV1AdminConfigReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminConfigReloadRequest(c.Server)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+func (c *Client) PostConfigApplyWithBody(ctx context.Context, params *PostConfigApplyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigApplyRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -526,11 +2219,13 @@ func (c *Client) PostApiV1AdminConfigReload(ctx context.Context, reqEditors ...R
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminConfigRollback Restore a retained version's hook surface (re-validated; a NEW version)
+// PostConfigApply Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
 //
-// Corresponds with POST /api/v1/admin/config/rollback (the `PostApiV1AdminConfigRollback` operationId).
-func (c *Client) PostApiV1AdminConfigRollback(ctx context.Context, params *PostApiV1AdminConfigRollbackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminConfigRollbackRequest(c.Server, params)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+func (c *Client) PostConfigApply(ctx context.Context, params *PostConfigApplyParams, body PostConfigApplyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigApplyRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -541,11 +2236,11 @@ func (c *Client) PostApiV1AdminConfigRollback(ctx context.Context, params *PostA
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminConfigValidate Dry-run validate a proposed config
+// GetConfigDiff Structured hook-surface diff between two retained versions
 //
-// Corresponds with POST /api/v1/admin/config/validate (the `PostApiV1AdminConfigValidate` operationId).
-func (c *Client) PostApiV1AdminConfigValidate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminConfigValidateRequest(c.Server)
+// Corresponds with GET /api/v1/admin/config/diff (the `GetConfigDiff` operationId).
+func (c *Client) GetConfigDiff(ctx context.Context, params *GetConfigDiffParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConfigDiffRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -556,11 +2251,11 @@ func (c *Client) PostApiV1AdminConfigValidate(ctx context.Context, reqEditors ..
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminConfigVersions Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+// PostConfigReload Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
 //
-// Corresponds with GET /api/v1/admin/config/versions (the `GetApiV1AdminConfigVersions` operationId).
-func (c *Client) GetApiV1AdminConfigVersions(ctx context.Context, params *GetApiV1AdminConfigVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminConfigVersionsRequest(c.Server, params)
+// Corresponds with POST /api/v1/admin/config/reload (the `PostConfigReload` operationId).
+func (c *Client) PostConfigReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigReloadRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -571,11 +2266,13 @@ func (c *Client) GetApiV1AdminConfigVersions(ctx context.Context, params *GetApi
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminConfigVersionsV One retained config version, with its hook-surface snapshot
+// PostConfigRollbackWithBody Restore a retained version's hook surface (re-validated; a NEW version)
 //
-// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetApiV1AdminConfigVersionsV` operationId).
-func (c *Client) GetApiV1AdminConfigVersionsV(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminConfigVersionsVRequest(c.Server, v)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+func (c *Client) PostConfigRollbackWithBody(ctx context.Context, params *PostConfigRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigRollbackRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -586,11 +2283,13 @@ func (c *Client) GetApiV1AdminConfigVersionsV(ctx context.Context, v int, reqEdi
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminHooks Hook registry (definitions)
+// PostConfigRollback Restore a retained version's hook surface (re-validated; a NEW version)
 //
-// Corresponds with GET /api/v1/admin/hooks (the `GetApiV1AdminHooks` operationId).
-func (c *Client) GetApiV1AdminHooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminHooksRequest(c.Server)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+func (c *Client) PostConfigRollback(ctx context.Context, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigRollbackRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -601,11 +2300,11 @@ func (c *Client) GetApiV1AdminHooks(ctx context.Context, reqEditors ...RequestEd
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminHooks Register (or replace) a hook at runtime — live immediately
+// GetConfigSettings Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
 //
-// Corresponds with POST /api/v1/admin/hooks (the `PostApiV1AdminHooks` operationId).
-func (c *Client) PostApiV1AdminHooks(ctx context.Context, params *PostApiV1AdminHooksParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminHooksRequest(c.Server, params)
+// Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
+func (c *Client) GetConfigSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConfigSettingsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -616,11 +2315,13 @@ func (c *Client) PostApiV1AdminHooks(ctx context.Context, params *PostApiV1Admin
 	return c.Client.Do(req)
 }
 
-// DeleteApiV1AdminHooksName Remove a hook at runtime — live immediately
+// PutConfigSettingsWithBody SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 //
-// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteApiV1AdminHooksName` operationId).
-func (c *Client) DeleteApiV1AdminHooksName(ctx context.Context, name string, params *DeleteApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDeleteApiV1AdminHooksNameRequest(c.Server, name, params)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+func (c *Client) PutConfigSettingsWithBody(ctx context.Context, params *PutConfigSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutConfigSettingsRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -631,11 +2332,13 @@ func (c *Client) DeleteApiV1AdminHooksName(ctx context.Context, name string, par
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminHooksName One hook definition
+// PutConfigSettings SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 //
-// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetApiV1AdminHooksName` operationId).
-func (c *Client) GetApiV1AdminHooksName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminHooksNameRequest(c.Server, name)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+func (c *Client) PutConfigSettings(ctx context.Context, params *PutConfigSettingsParams, body PutConfigSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutConfigSettingsRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -646,11 +2349,13 @@ func (c *Client) GetApiV1AdminHooksName(ctx context.Context, name string, reqEdi
 	return c.Client.Do(req)
 }
 
-// PutApiV1AdminHooksName Replace an overlay hook definition — live immediately (grants immutable)
+// PostConfigValidateWithBody Dry-run validate a proposed config
 //
-// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutApiV1AdminHooksName` operationId).
-func (c *Client) PutApiV1AdminHooksName(ctx context.Context, name string, params *PutApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPutApiV1AdminHooksNameRequest(c.Server, name, params)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+func (c *Client) PostConfigValidateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigValidateRequestWithBody(c.Server, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -661,11 +2366,13 @@ func (c *Client) PutApiV1AdminHooksName(ctx context.Context, name string, params
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminHooksNameHealth Best-effort hook transport reachability
+// PostConfigValidate Dry-run validate a proposed config
 //
-// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetApiV1AdminHooksNameHealth` operationId).
-func (c *Client) GetApiV1AdminHooksNameHealth(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminHooksNameHealthRequest(c.Server, name)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+func (c *Client) PostConfigValidate(ctx context.Context, body PostConfigValidateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostConfigValidateRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -676,11 +2383,11 @@ func (c *Client) GetApiV1AdminHooksNameHealth(ctx context.Context, name string, 
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminHooksNameSchema The hook's self-described settings JSON Schema (describe proxy)
+// GetConfigVersions Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 //
-// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetApiV1AdminHooksNameSchema` operationId).
-func (c *Client) GetApiV1AdminHooksNameSchema(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminHooksNameSchemaRequest(c.Server, name)
+// Corresponds with GET /api/v1/admin/config/versions (the `GetConfigVersions` operationId).
+func (c *Client) GetConfigVersions(ctx context.Context, params *GetConfigVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConfigVersionsRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -691,11 +2398,11 @@ func (c *Client) GetApiV1AdminHooksNameSchema(ctx context.Context, name string, 
 	return c.Client.Do(req)
 }
 
-// PatchApiV1AdminHooksNameSettings Push an opaque settings map to the running hook; COMMIT ON ACK
+// GetConfigVersionsV One retained config version, with its hook-surface snapshot
 //
-// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchApiV1AdminHooksNameSettings` operationId).
-func (c *Client) PatchApiV1AdminHooksNameSettings(ctx context.Context, name string, params *PatchApiV1AdminHooksNameSettingsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchApiV1AdminHooksNameSettingsRequest(c.Server, name, params)
+// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetConfigVersionsV` operationId).
+func (c *Client) GetConfigVersionsV(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConfigVersionsVRequest(c.Server, v)
 	if err != nil {
 		return nil, err
 	}
@@ -706,11 +2413,11 @@ func (c *Client) PatchApiV1AdminHooksNameSettings(ctx context.Context, name stri
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminHooksNameStatus The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+// GetGroups Group registry — the limit tree (parent chain, limits, child_default budget template)
 //
-// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetApiV1AdminHooksNameStatus` operationId).
-func (c *Client) GetApiV1AdminHooksNameStatus(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminHooksNameStatusRequest(c.Server, name)
+// Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
+func (c *Client) GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGroupsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -721,11 +2428,13 @@ func (c *Client) GetApiV1AdminHooksNameStatus(ctx context.Context, name string, 
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminInfo Version, compiled-in plugin proof, uptime, topology
+// PostGroupsWithBody Create (or replace) a group at runtime — live immediately (upsert)
 //
-// Corresponds with GET /api/v1/admin/info (the `GetApiV1AdminInfo` operationId).
-func (c *Client) GetApiV1AdminInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminInfoRequest(c.Server)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+func (c *Client) PostGroupsWithBody(ctx context.Context, params *PostGroupsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostGroupsRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -736,11 +2445,13 @@ func (c *Client) GetApiV1AdminInfo(ctx context.Context, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)
+// PostGroups Create (or replace) a group at runtime — live immediately (upsert)
 //
-// Corresponds with GET /api/v1/admin/keys (the `GetApiV1AdminKeys` operationId).
-func (c *Client) GetApiV1AdminKeys(ctx context.Context, params *GetApiV1AdminKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminKeysRequest(c.Server, params)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+func (c *Client) PostGroups(ctx context.Context, params *PostGroupsParams, body PostGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostGroupsRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -751,11 +2462,11 @@ func (c *Client) GetApiV1AdminKeys(ctx context.Context, params *GetApiV1AdminKey
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminKeys Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+// DeleteGroupsName Remove an overlay group at runtime — live immediately
 //
-// Corresponds with POST /api/v1/admin/keys (the `PostApiV1AdminKeys` operationId).
-func (c *Client) PostApiV1AdminKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminKeysRequest(c.Server)
+// Corresponds with DELETE /api/v1/admin/groups/{name} (the `DeleteGroupsName` operationId).
+func (c *Client) DeleteGroupsName(ctx context.Context, name string, params *DeleteGroupsNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteGroupsNameRequest(c.Server, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -766,11 +2477,11 @@ func (c *Client) PostApiV1AdminKeys(ctx context.Context, reqEditors ...RequestEd
 	return c.Client.Do(req)
 }
 
-// DeleteApiV1AdminKeysId Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+// GetGroupsName One group definition (parent, enabled, limits, child_default)
 //
-// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteApiV1AdminKeysId` operationId).
-func (c *Client) DeleteApiV1AdminKeysId(ctx context.Context, id string, params *DeleteApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDeleteApiV1AdminKeysIdRequest(c.Server, id, params)
+// Corresponds with GET /api/v1/admin/groups/{name} (the `GetGroupsName` operationId).
+func (c *Client) GetGroupsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGroupsNameRequest(c.Server, name)
 	if err != nil {
 		return nil, err
 	}
@@ -781,11 +2492,13 @@ func (c *Client) DeleteApiV1AdminKeysId(ctx context.Context, id string, params *
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminKeysId One key's metadata + `ETag` (never the secret/hash)
+// PatchGroupsNameWithBody Partial update — change only the fields present (e.g. raise a budget, freeze a group)
 //
-// Corresponds with GET /api/v1/admin/keys/{id} (the `GetApiV1AdminKeysId` operationId).
-func (c *Client) GetApiV1AdminKeysId(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminKeysIdRequest(c.Server, id)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+func (c *Client) PatchGroupsNameWithBody(ctx context.Context, name string, params *PatchGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchGroupsNameRequestWithBody(c.Server, name, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -796,11 +2509,13 @@ func (c *Client) GetApiV1AdminKeysId(ctx context.Context, id string, reqEditors 
 	return c.Client.Do(req)
 }
 
-// PatchApiV1AdminKeysId Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency
+// PatchGroupsName Partial update — change only the fields present (e.g. raise a budget, freeze a group)
 //
-// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchApiV1AdminKeysId` operationId).
-func (c *Client) PatchApiV1AdminKeysId(ctx context.Context, id string, params *PatchApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchApiV1AdminKeysIdRequest(c.Server, id, params)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+func (c *Client) PatchGroupsName(ctx context.Context, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchGroupsNameRequest(c.Server, name, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -811,11 +2526,13 @@ func (c *Client) PatchApiV1AdminKeysId(ctx context.Context, id string, params *P
 	return c.Client.Do(req)
 }
 
-// PostApiV1AdminKeysIdRotate Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+// PutGroupsNameWithBody Replace an overlay group definition — live immediately (limits rebuilt)
 //
-// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostApiV1AdminKeysIdRotate` operationId).
-func (c *Client) PostApiV1AdminKeysIdRotate(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostApiV1AdminKeysIdRotateRequest(c.Server, id)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+func (c *Client) PutGroupsNameWithBody(ctx context.Context, name string, params *PutGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutGroupsNameRequestWithBody(c.Server, name, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -826,11 +2543,13 @@ func (c *Client) PostApiV1AdminKeysIdRotate(ctx context.Context, id string, reqE
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminKeysIdUsage Current-window usage for one key (spend / tokens / requests)
+// PutGroupsName Replace an overlay group definition — live immediately (limits rebuilt)
 //
-// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetApiV1AdminKeysIdUsage` operationId).
-func (c *Client) GetApiV1AdminKeysIdUsage(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminKeysIdUsageRequest(c.Server, id)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+func (c *Client) PutGroupsName(ctx context.Context, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutGroupsNameRequest(c.Server, name, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -841,11 +2560,11 @@ func (c *Client) GetApiV1AdminKeysIdUsage(ctx context.Context, id string, reqEdi
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminModels Model lanes + upstream providers
+// GetGroupsNameUsage The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 //
-// Corresponds with GET /api/v1/admin/models (the `GetApiV1AdminModels` operationId).
-func (c *Client) GetApiV1AdminModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminModelsRequest(c.Server)
+// Corresponds with GET /api/v1/admin/groups/{name}/usage (the `GetGroupsNameUsage` operationId).
+func (c *Client) GetGroupsNameUsage(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGroupsNameUsageRequest(c.Server, name)
 	if err != nil {
 		return nil, err
 	}
@@ -856,11 +2575,11 @@ func (c *Client) GetApiV1AdminModels(ctx context.Context, reqEditors ...RequestE
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminOpenapiJson This OpenAPI 3.1 document
+// GetHooks Hook registry (definitions)
 //
-// Corresponds with GET /api/v1/admin/openapi.json (the `GetApiV1AdminOpenapiJson` operationId).
-func (c *Client) GetApiV1AdminOpenapiJson(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminOpenapiJsonRequest(c.Server)
+// Corresponds with GET /api/v1/admin/hooks (the `GetHooks` operationId).
+func (c *Client) GetHooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHooksRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -871,11 +2590,13 @@ func (c *Client) GetApiV1AdminOpenapiJson(ctx context.Context, reqEditors ...Req
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminPlugins Plugin catalog by type (compiled-in + external)
+// PostHooksWithBody Register (or replace) a hook at runtime — live immediately
 //
-// Corresponds with GET /api/v1/admin/plugins (the `GetApiV1AdminPlugins` operationId).
-func (c *Client) GetApiV1AdminPlugins(ctx context.Context, params *GetApiV1AdminPluginsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminPluginsRequest(c.Server, params)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+func (c *Client) PostHooksWithBody(ctx context.Context, params *PostHooksParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostHooksRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -886,11 +2607,13 @@ func (c *Client) GetApiV1AdminPlugins(ctx context.Context, params *GetApiV1Admin
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminPools Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+// PostHooks Register (or replace) a hook at runtime — live immediately
 //
-// Corresponds with GET /api/v1/admin/pools (the `GetApiV1AdminPools` operationId).
-func (c *Client) GetApiV1AdminPools(ctx context.Context, params *GetApiV1AdminPoolsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminPoolsRequest(c.Server, params)
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+func (c *Client) PostHooks(ctx context.Context, params *PostHooksParams, body PostHooksJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostHooksRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -901,11 +2624,11 @@ func (c *Client) GetApiV1AdminPools(ctx context.Context, params *GetApiV1AdminPo
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminPoolsName Live per-member status of one pool (breaker/concurrency/latency)
+// DeleteHooksName Remove a hook at runtime — live immediately
 //
-// Corresponds with GET /api/v1/admin/pools/{name} (the `GetApiV1AdminPoolsName` operationId).
-func (c *Client) GetApiV1AdminPoolsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminPoolsNameRequest(c.Server, name)
+// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteHooksName` operationId).
+func (c *Client) DeleteHooksName(ctx context.Context, name string, params *DeleteHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteHooksNameRequest(c.Server, name, params)
 	if err != nil {
 		return nil, err
 	}
@@ -916,11 +2639,11 @@ func (c *Client) GetApiV1AdminPoolsName(ctx context.Context, name string, reqEdi
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminProviders Distinct providers + lane counts
+// GetHooksName One hook definition
 //
-// Corresponds with GET /api/v1/admin/providers (the `GetApiV1AdminProviders` operationId).
-func (c *Client) GetApiV1AdminProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminProvidersRequest(c.Server)
+// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetHooksName` operationId).
+func (c *Client) GetHooksName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHooksNameRequest(c.Server, name)
 	if err != nil {
 		return nil, err
 	}
@@ -931,11 +2654,13 @@ func (c *Client) GetApiV1AdminProviders(ctx context.Context, reqEditors ...Reque
 	return c.Client.Do(req)
 }
 
-// GetApiV1AdminUsage Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+// PutHooksNameWithBody Replace an overlay hook definition — live immediately (grants immutable)
 //
-// Corresponds with GET /api/v1/admin/usage (the `GetApiV1AdminUsage` operationId).
-func (c *Client) GetApiV1AdminUsage(ctx context.Context, params *GetApiV1AdminUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1AdminUsageRequest(c.Server, params)
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+func (c *Client) PutHooksNameWithBody(ctx context.Context, name string, params *PutHooksNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutHooksNameRequestWithBody(c.Server, name, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -946,8 +2671,559 @@ func (c *Client) GetApiV1AdminUsage(ctx context.Context, params *GetApiV1AdminUs
 	return c.Client.Do(req)
 }
 
-// NewGetApiV1AdminAdminAuthRequest constructs an http.Request for the GetApiV1AdminAdminAuth method
-func NewGetApiV1AdminAdminAuthRequest(server string) (*http.Request, error) {
+// PutHooksName Replace an overlay hook definition — live immediately (grants immutable)
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+func (c *Client) PutHooksName(ctx context.Context, name string, params *PutHooksNameParams, body PutHooksNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutHooksNameRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetHooksNameHealth Best-effort hook transport reachability
+//
+// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetHooksNameHealth` operationId).
+func (c *Client) GetHooksNameHealth(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHooksNameHealthRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetHooksNameSchema The hook's self-described settings JSON Schema (describe proxy)
+//
+// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetHooksNameSchema` operationId).
+func (c *Client) GetHooksNameSchema(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHooksNameSchemaRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchHooksNameSettingsWithBody Push an opaque settings map to the running hook; COMMIT ON ACK
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+func (c *Client) PatchHooksNameSettingsWithBody(ctx context.Context, name string, params *PatchHooksNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchHooksNameSettingsRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchHooksNameSettings Push an opaque settings map to the running hook; COMMIT ON ACK
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+func (c *Client) PatchHooksNameSettings(ctx context.Context, name string, params *PatchHooksNameSettingsParams, body PatchHooksNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchHooksNameSettingsRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetHooksNameStatus The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+//
+// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetHooksNameStatus` operationId).
+func (c *Client) GetHooksNameStatus(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHooksNameStatusRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetInfo Version, compiled-in plugin proof, uptime, topology
+//
+// Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
+func (c *Client) GetInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInfoRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+//
+// Corresponds with GET /api/v1/admin/keys (the `GetKeys` operationId).
+func (c *Client) GetKeys(ctx context.Context, params *GetKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetKeysRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostKeysWithBody Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+func (c *Client) PostKeysWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostKeysRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostKeys Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+func (c *Client) PostKeys(ctx context.Context, body PostKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostKeysRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteKeysId Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+//
+// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteKeysId` operationId).
+func (c *Client) DeleteKeysId(ctx context.Context, id string, params *DeleteKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteKeysIdRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetKeysId One key's metadata + `ETag` (never the secret/hash)
+//
+// Corresponds with GET /api/v1/admin/keys/{id} (the `GetKeysId` operationId).
+func (c *Client) GetKeysId(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetKeysIdRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchKeysIdWithBody Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+func (c *Client) PatchKeysIdWithBody(ctx context.Context, id string, params *PatchKeysIdParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchKeysIdRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchKeysId Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+func (c *Client) PatchKeysId(ctx context.Context, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchKeysIdRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostKeysIdRevoke REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+//
+// Corresponds with POST /api/v1/admin/keys/{id}/revoke (the `PostKeysIdRevoke` operationId).
+func (c *Client) PostKeysIdRevoke(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostKeysIdRevokeRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostKeysIdRotate Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+//
+// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostKeysIdRotate` operationId).
+func (c *Client) PostKeysIdRotate(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostKeysIdRotateRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetKeysIdUsage Current-window usage for one key (spend / tokens / requests)
+//
+// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetKeysIdUsage` operationId).
+func (c *Client) GetKeysIdUsage(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetKeysIdUsageRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetModels Model lanes + upstream providers
+//
+// Corresponds with GET /api/v1/admin/models (the `GetModels` operationId).
+func (c *Client) GetModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetModelsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetOpenapiJson This OpenAPI 3.1 document
+//
+// Corresponds with GET /api/v1/admin/openapi.json (the `GetOpenapiJson` operationId).
+func (c *Client) GetOpenapiJson(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetOpenapiJsonRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteOverlaySection DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+//
+// Corresponds with DELETE /api/v1/admin/overlay/{section} (the `DeleteOverlaySection` operationId).
+func (c *Client) DeleteOverlaySection(ctx context.Context, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteOverlaySectionRequest(c.Server, section, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPlugins Plugin catalog by type (compiled-in + external + dynamic-library)
+//
+// Corresponds with GET /api/v1/admin/plugins (the `GetPlugins` operationId).
+func (c *Client) GetPlugins(ctx context.Context, params *GetPluginsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPluginsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPluginsWithBody Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+func (c *Client) PostPluginsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPlugins Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+func (c *Client) PostPlugins(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPluginsReload Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
+//
+// Corresponds with POST /api/v1/admin/plugins/reload (the `PostPluginsReload` operationId).
+func (c *Client) PostPluginsReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsReloadRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPluginsRollbackWithBody EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+func (c *Client) PostPluginsRollbackWithBody(ctx context.Context, params *PostPluginsRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsRollbackRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPluginsRollback EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+func (c *Client) PostPluginsRollback(ctx context.Context, params *PostPluginsRollbackParams, body PostPluginsRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsRollbackRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeletePluginsFile Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load
+//
+// Corresponds with DELETE /api/v1/admin/plugins/{file} (the `DeletePluginsFile` operationId).
+func (c *Client) DeletePluginsFile(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeletePluginsFileRequest(c.Server, file)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPluginsFileSchema The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+//
+// Corresponds with GET /api/v1/admin/plugins/{file}/schema (the `GetPluginsFileSchema` operationId).
+func (c *Client) GetPluginsFileSchema(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPluginsFileSchemaRequest(c.Server, file)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPools Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+//
+// Corresponds with GET /api/v1/admin/pools (the `GetPools` operationId).
+func (c *Client) GetPools(ctx context.Context, params *GetPoolsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPoolsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPoolsName Live per-member status of one pool (breaker/concurrency/latency)
+//
+// Corresponds with GET /api/v1/admin/pools/{name} (the `GetPoolsName` operationId).
+func (c *Client) GetPoolsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPoolsNameRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetProviders Distinct providers + lane counts
+//
+// Corresponds with GET /api/v1/admin/providers (the `GetProviders` operationId).
+func (c *Client) GetProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetProvidersRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostRestartWithBody Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+func (c *Client) PostRestartWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostRestartRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostRestart Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+func (c *Client) PostRestart(ctx context.Context, body PostRestartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostRestartRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSigningKeyRotate ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+//
+// Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
+func (c *Client) PostSigningKeyRotate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSigningKeyRotateRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetUsage Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+//
+// Corresponds with GET /api/v1/admin/usage (the `GetUsage` operationId).
+func (c *Client) GetUsage(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetUsageRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// NewGetAdminAuthRequest constructs an http.Request for the GetAdminAuth method
+func NewGetAdminAuthRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -973,8 +3249,19 @@ func NewGetApiV1AdminAdminAuthRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewPutApiV1AdminAdminAuthRequest constructs an http.Request for the PutApiV1AdminAdminAuth method
-func NewPutApiV1AdminAdminAuthRequest(server string, params *PutApiV1AdminAdminAuthParams) (*http.Request, error) {
+// NewPutAdminAuthRequest calls the generic PutAdminAuth builder with application/json body
+func NewPutAdminAuthRequest(server string, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutAdminAuthRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPutAdminAuthRequestWithBody constructs an http.Request for the PutAdminAuth method, with any body, and a specified content type
+func NewPutAdminAuthRequestWithBody(server string, params *PutAdminAuthParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -992,10 +3279,12 @@ func NewPutApiV1AdminAdminAuthRequest(server string, params *PutApiV1AdminAdminA
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPut, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -1015,8 +3304,8 @@ func NewPutApiV1AdminAdminAuthRequest(server string, params *PutApiV1AdminAdminA
 	return req, nil
 }
 
-// NewGetApiV1AdminAuditRequest constructs an http.Request for the GetApiV1AdminAudit method
-func NewGetApiV1AdminAuditRequest(server string, params *GetApiV1AdminAuditParams) (*http.Request, error) {
+// NewGetAuditRequest constructs an http.Request for the GetAudit method
+func NewGetAuditRequest(server string, params *GetAuditParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1105,8 +3394,8 @@ func NewGetApiV1AdminAuditRequest(server string, params *GetApiV1AdminAuditParam
 	return req, nil
 }
 
-// NewGetApiV1AdminAuthRequest constructs an http.Request for the GetApiV1AdminAuth method
-func NewGetApiV1AdminAuthRequest(server string) (*http.Request, error) {
+// NewGetAuthRequest constructs an http.Request for the GetAuth method
+func NewGetAuthRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1132,8 +3421,19 @@ func NewGetApiV1AdminAuthRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewPostApiV1AdminAuthCacheFlushRequest constructs an http.Request for the PostApiV1AdminAuthCacheFlush method
-func NewPostApiV1AdminAuthCacheFlushRequest(server string) (*http.Request, error) {
+// NewPostAuthCacheFlushRequest calls the generic PostAuthCacheFlush builder with application/json body
+func NewPostAuthCacheFlushRequest(server string, body PostAuthCacheFlushJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostAuthCacheFlushRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostAuthCacheFlushRequestWithBody constructs an http.Request for the PostAuthCacheFlush method, with any body, and a specified content type
+func NewPostAuthCacheFlushRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1151,16 +3451,18 @@ func NewPostApiV1AdminAuthCacheFlushRequest(server string) (*http.Request, error
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Add("Content-Type", contentType)
+
 	return req, nil
 }
 
-// NewGetApiV1AdminConfigRequest constructs an http.Request for the GetApiV1AdminConfig method
-func NewGetApiV1AdminConfigRequest(server string) (*http.Request, error) {
+// NewGetConfigRequest constructs an http.Request for the GetConfig method
+func NewGetConfigRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1186,8 +3488,19 @@ func NewGetApiV1AdminConfigRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewPostApiV1AdminConfigApplyRequest constructs an http.Request for the PostApiV1AdminConfigApply method
-func NewPostApiV1AdminConfigApplyRequest(server string, params *PostApiV1AdminConfigApplyParams) (*http.Request, error) {
+// NewPostConfigApplyRequest calls the generic PostConfigApply builder with application/json body
+func NewPostConfigApplyRequest(server string, params *PostConfigApplyParams, body PostConfigApplyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostConfigApplyRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPostConfigApplyRequestWithBody constructs an http.Request for the PostConfigApply method, with any body, and a specified content type
+func NewPostConfigApplyRequestWithBody(server string, params *PostConfigApplyParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1205,10 +3518,12 @@ func NewPostApiV1AdminConfigApplyRequest(server string, params *PostApiV1AdminCo
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -1228,8 +3543,8 @@ func NewPostApiV1AdminConfigApplyRequest(server string, params *PostApiV1AdminCo
 	return req, nil
 }
 
-// NewGetApiV1AdminConfigDiffRequest constructs an http.Request for the GetApiV1AdminConfigDiff method
-func NewGetApiV1AdminConfigDiffRequest(server string, params *GetApiV1AdminConfigDiffParams) (*http.Request, error) {
+// NewGetConfigDiffRequest constructs an http.Request for the GetConfigDiff method
+func NewGetConfigDiffRequest(server string, params *GetConfigDiffParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1286,8 +3601,8 @@ func NewGetApiV1AdminConfigDiffRequest(server string, params *GetApiV1AdminConfi
 	return req, nil
 }
 
-// NewPostApiV1AdminConfigReloadRequest constructs an http.Request for the PostApiV1AdminConfigReload method
-func NewPostApiV1AdminConfigReloadRequest(server string) (*http.Request, error) {
+// NewPostConfigReloadRequest constructs an http.Request for the PostConfigReload method
+func NewPostConfigReloadRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1313,8 +3628,19 @@ func NewPostApiV1AdminConfigReloadRequest(server string) (*http.Request, error) 
 	return req, nil
 }
 
-// NewPostApiV1AdminConfigRollbackRequest constructs an http.Request for the PostApiV1AdminConfigRollback method
-func NewPostApiV1AdminConfigRollbackRequest(server string, params *PostApiV1AdminConfigRollbackParams) (*http.Request, error) {
+// NewPostConfigRollbackRequest calls the generic PostConfigRollback builder with application/json body
+func NewPostConfigRollbackRequest(server string, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostConfigRollbackRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPostConfigRollbackRequestWithBody constructs an http.Request for the PostConfigRollback method, with any body, and a specified content type
+func NewPostConfigRollbackRequestWithBody(server string, params *PostConfigRollbackParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1332,10 +3658,12 @@ func NewPostApiV1AdminConfigRollbackRequest(server string, params *PostApiV1Admi
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -1355,8 +3683,101 @@ func NewPostApiV1AdminConfigRollbackRequest(server string, params *PostApiV1Admi
 	return req, nil
 }
 
-// NewPostApiV1AdminConfigValidateRequest constructs an http.Request for the PostApiV1AdminConfigValidate method
-func NewPostApiV1AdminConfigValidateRequest(server string) (*http.Request, error) {
+// NewGetConfigSettingsRequest constructs an http.Request for the GetConfigSettings method
+func NewGetConfigSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/config/settings")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutConfigSettingsRequest calls the generic PutConfigSettings builder with application/json body
+func NewPutConfigSettingsRequest(server string, params *PutConfigSettingsParams, body PutConfigSettingsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutConfigSettingsRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPutConfigSettingsRequestWithBody constructs an http.Request for the PutConfigSettings method, with any body, and a specified content type
+func NewPutConfigSettingsRequestWithBody(server string, params *PutConfigSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/config/settings")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPostConfigValidateRequest calls the generic PostConfigValidate builder with application/json body
+func NewPostConfigValidateRequest(server string, body PostConfigValidateJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostConfigValidateRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostConfigValidateRequestWithBody constructs an http.Request for the PostConfigValidate method, with any body, and a specified content type
+func NewPostConfigValidateRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1374,16 +3795,18 @@ func NewPostApiV1AdminConfigValidateRequest(server string) (*http.Request, error
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Add("Content-Type", contentType)
+
 	return req, nil
 }
 
-// NewGetApiV1AdminConfigVersionsRequest constructs an http.Request for the GetApiV1AdminConfigVersions method
-func NewGetApiV1AdminConfigVersionsRequest(server string, params *GetApiV1AdminConfigVersionsParams) (*http.Request, error) {
+// NewGetConfigVersionsRequest constructs an http.Request for the GetConfigVersions method
+func NewGetConfigVersionsRequest(server string, params *GetConfigVersionsParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1448,8 +3871,8 @@ func NewGetApiV1AdminConfigVersionsRequest(server string, params *GetApiV1AdminC
 	return req, nil
 }
 
-// NewGetApiV1AdminConfigVersionsVRequest constructs an http.Request for the GetApiV1AdminConfigVersionsV method
-func NewGetApiV1AdminConfigVersionsVRequest(server string, v int) (*http.Request, error) {
+// NewGetConfigVersionsVRequest constructs an http.Request for the GetConfigVersionsV method
+func NewGetConfigVersionsVRequest(server string, v int) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1482,8 +3905,331 @@ func NewGetApiV1AdminConfigVersionsVRequest(server string, v int) (*http.Request
 	return req, nil
 }
 
-// NewGetApiV1AdminHooksRequest constructs an http.Request for the GetApiV1AdminHooks method
-func NewGetApiV1AdminHooksRequest(server string) (*http.Request, error) {
+// NewGetGroupsRequest constructs an http.Request for the GetGroups method
+func NewGetGroupsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostGroupsRequest calls the generic PostGroups builder with application/json body
+func NewPostGroupsRequest(server string, params *PostGroupsParams, body PostGroupsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostGroupsRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPostGroupsRequestWithBody constructs an http.Request for the PostGroups method, with any body, and a specified content type
+func NewPostGroupsRequestWithBody(server string, params *PostGroupsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeleteGroupsNameRequest constructs an http.Request for the DeleteGroupsName method
+func NewDeleteGroupsNameRequest(server string, name string, params *DeleteGroupsNameParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetGroupsNameRequest constructs an http.Request for the GetGroupsName method
+func NewGetGroupsNameRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchGroupsNameRequest calls the generic PatchGroupsName builder with application/json body
+func NewPatchGroupsNameRequest(server string, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchGroupsNameRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPatchGroupsNameRequestWithBody constructs an http.Request for the PatchGroupsName method, with any body, and a specified content type
+func NewPatchGroupsNameRequestWithBody(server string, name string, params *PatchGroupsNameParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPutGroupsNameRequest calls the generic PutGroupsName builder with application/json body
+func NewPutGroupsNameRequest(server string, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutGroupsNameRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPutGroupsNameRequestWithBody constructs an http.Request for the PutGroupsName method, with any body, and a specified content type
+func NewPutGroupsNameRequestWithBody(server string, name string, params *PutGroupsNameParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetGroupsNameUsageRequest constructs an http.Request for the GetGroupsNameUsage method
+func NewGetGroupsNameUsageRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/groups/%s/usage", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetHooksRequest constructs an http.Request for the GetHooks method
+func NewGetHooksRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1509,8 +4255,19 @@ func NewGetApiV1AdminHooksRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewPostApiV1AdminHooksRequest constructs an http.Request for the PostApiV1AdminHooks method
-func NewPostApiV1AdminHooksRequest(server string, params *PostApiV1AdminHooksParams) (*http.Request, error) {
+// NewPostHooksRequest calls the generic PostHooks builder with application/json body
+func NewPostHooksRequest(server string, params *PostHooksParams, body PostHooksJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostHooksRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPostHooksRequestWithBody constructs an http.Request for the PostHooks method, with any body, and a specified content type
+func NewPostHooksRequestWithBody(server string, params *PostHooksParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1528,10 +4285,12 @@ func NewPostApiV1AdminHooksRequest(server string, params *PostApiV1AdminHooksPar
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -1551,8 +4310,8 @@ func NewPostApiV1AdminHooksRequest(server string, params *PostApiV1AdminHooksPar
 	return req, nil
 }
 
-// NewDeleteApiV1AdminHooksNameRequest constructs an http.Request for the DeleteApiV1AdminHooksName method
-func NewDeleteApiV1AdminHooksNameRequest(server string, name string, params *DeleteApiV1AdminHooksNameParams) (*http.Request, error) {
+// NewDeleteHooksNameRequest constructs an http.Request for the DeleteHooksName method
+func NewDeleteHooksNameRequest(server string, name string, params *DeleteHooksNameParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1600,8 +4359,8 @@ func NewDeleteApiV1AdminHooksNameRequest(server string, name string, params *Del
 	return req, nil
 }
 
-// NewGetApiV1AdminHooksNameRequest constructs an http.Request for the GetApiV1AdminHooksName method
-func NewGetApiV1AdminHooksNameRequest(server string, name string) (*http.Request, error) {
+// NewGetHooksNameRequest constructs an http.Request for the GetHooksName method
+func NewGetHooksNameRequest(server string, name string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1634,8 +4393,19 @@ func NewGetApiV1AdminHooksNameRequest(server string, name string) (*http.Request
 	return req, nil
 }
 
-// NewPutApiV1AdminHooksNameRequest constructs an http.Request for the PutApiV1AdminHooksName method
-func NewPutApiV1AdminHooksNameRequest(server string, name string, params *PutApiV1AdminHooksNameParams) (*http.Request, error) {
+// NewPutHooksNameRequest calls the generic PutHooksName builder with application/json body
+func NewPutHooksNameRequest(server string, name string, params *PutHooksNameParams, body PutHooksNameJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutHooksNameRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPutHooksNameRequestWithBody constructs an http.Request for the PutHooksName method, with any body, and a specified content type
+func NewPutHooksNameRequestWithBody(server string, name string, params *PutHooksNameParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1660,10 +4430,12 @@ func NewPutApiV1AdminHooksNameRequest(server string, name string, params *PutApi
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPut, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -1683,8 +4455,8 @@ func NewPutApiV1AdminHooksNameRequest(server string, name string, params *PutApi
 	return req, nil
 }
 
-// NewGetApiV1AdminHooksNameHealthRequest constructs an http.Request for the GetApiV1AdminHooksNameHealth method
-func NewGetApiV1AdminHooksNameHealthRequest(server string, name string) (*http.Request, error) {
+// NewGetHooksNameHealthRequest constructs an http.Request for the GetHooksNameHealth method
+func NewGetHooksNameHealthRequest(server string, name string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1717,8 +4489,8 @@ func NewGetApiV1AdminHooksNameHealthRequest(server string, name string) (*http.R
 	return req, nil
 }
 
-// NewGetApiV1AdminHooksNameSchemaRequest constructs an http.Request for the GetApiV1AdminHooksNameSchema method
-func NewGetApiV1AdminHooksNameSchemaRequest(server string, name string) (*http.Request, error) {
+// NewGetHooksNameSchemaRequest constructs an http.Request for the GetHooksNameSchema method
+func NewGetHooksNameSchemaRequest(server string, name string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1751,8 +4523,19 @@ func NewGetApiV1AdminHooksNameSchemaRequest(server string, name string) (*http.R
 	return req, nil
 }
 
-// NewPatchApiV1AdminHooksNameSettingsRequest constructs an http.Request for the PatchApiV1AdminHooksNameSettings method
-func NewPatchApiV1AdminHooksNameSettingsRequest(server string, name string, params *PatchApiV1AdminHooksNameSettingsParams) (*http.Request, error) {
+// NewPatchHooksNameSettingsRequest calls the generic PatchHooksNameSettings builder with application/json body
+func NewPatchHooksNameSettingsRequest(server string, name string, params *PatchHooksNameSettingsParams, body PatchHooksNameSettingsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchHooksNameSettingsRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPatchHooksNameSettingsRequestWithBody constructs an http.Request for the PatchHooksNameSettings method, with any body, and a specified content type
+func NewPatchHooksNameSettingsRequestWithBody(server string, name string, params *PatchHooksNameSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1777,10 +4560,12 @@ func NewPatchApiV1AdminHooksNameSettingsRequest(server string, name string, para
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -1800,8 +4585,8 @@ func NewPatchApiV1AdminHooksNameSettingsRequest(server string, name string, para
 	return req, nil
 }
 
-// NewGetApiV1AdminHooksNameStatusRequest constructs an http.Request for the GetApiV1AdminHooksNameStatus method
-func NewGetApiV1AdminHooksNameStatusRequest(server string, name string) (*http.Request, error) {
+// NewGetHooksNameStatusRequest constructs an http.Request for the GetHooksNameStatus method
+func NewGetHooksNameStatusRequest(server string, name string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1834,8 +4619,8 @@ func NewGetApiV1AdminHooksNameStatusRequest(server string, name string) (*http.R
 	return req, nil
 }
 
-// NewGetApiV1AdminInfoRequest constructs an http.Request for the GetApiV1AdminInfo method
-func NewGetApiV1AdminInfoRequest(server string) (*http.Request, error) {
+// NewGetInfoRequest constructs an http.Request for the GetInfo method
+func NewGetInfoRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1861,8 +4646,8 @@ func NewGetApiV1AdminInfoRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewGetApiV1AdminKeysRequest constructs an http.Request for the GetApiV1AdminKeys method
-func NewGetApiV1AdminKeysRequest(server string, params *GetApiV1AdminKeysParams) (*http.Request, error) {
+// NewGetKeysRequest constructs an http.Request for the GetKeys method
+func NewGetKeysRequest(server string, params *GetKeysParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1913,6 +4698,18 @@ func NewGetApiV1AdminKeysRequest(server string, params *GetApiV1AdminKeysParams)
 
 		}
 
+		if params.Group != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "group", *params.Group, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
@@ -1937,6 +4734,18 @@ func NewGetApiV1AdminKeysRequest(server string, params *GetApiV1AdminKeysParams)
 
 		}
 
+		if params.Include != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "include", *params.Include, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if encoded := queryValues.Encode(); encoded != "" {
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
@@ -1951,8 +4760,19 @@ func NewGetApiV1AdminKeysRequest(server string, params *GetApiV1AdminKeysParams)
 	return req, nil
 }
 
-// NewPostApiV1AdminKeysRequest constructs an http.Request for the PostApiV1AdminKeys method
-func NewPostApiV1AdminKeysRequest(server string) (*http.Request, error) {
+// NewPostKeysRequest calls the generic PostKeys builder with application/json body
+func NewPostKeysRequest(server string, body PostKeysJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostKeysRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostKeysRequestWithBody constructs an http.Request for the PostKeys method, with any body, and a specified content type
+func NewPostKeysRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -1970,16 +4790,18 @@ func NewPostApiV1AdminKeysRequest(server string) (*http.Request, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
 
+	req.Header.Add("Content-Type", contentType)
+
 	return req, nil
 }
 
-// NewDeleteApiV1AdminKeysIdRequest constructs an http.Request for the DeleteApiV1AdminKeysId method
-func NewDeleteApiV1AdminKeysIdRequest(server string, id string, params *DeleteApiV1AdminKeysIdParams) (*http.Request, error) {
+// NewDeleteKeysIdRequest constructs an http.Request for the DeleteKeysId method
+func NewDeleteKeysIdRequest(server string, id string, params *DeleteKeysIdParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2027,8 +4849,8 @@ func NewDeleteApiV1AdminKeysIdRequest(server string, id string, params *DeleteAp
 	return req, nil
 }
 
-// NewGetApiV1AdminKeysIdRequest constructs an http.Request for the GetApiV1AdminKeysId method
-func NewGetApiV1AdminKeysIdRequest(server string, id string) (*http.Request, error) {
+// NewGetKeysIdRequest constructs an http.Request for the GetKeysId method
+func NewGetKeysIdRequest(server string, id string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2061,8 +4883,19 @@ func NewGetApiV1AdminKeysIdRequest(server string, id string) (*http.Request, err
 	return req, nil
 }
 
-// NewPatchApiV1AdminKeysIdRequest constructs an http.Request for the PatchApiV1AdminKeysId method
-func NewPatchApiV1AdminKeysIdRequest(server string, id string, params *PatchApiV1AdminKeysIdParams) (*http.Request, error) {
+// NewPatchKeysIdRequest calls the generic PatchKeysId builder with application/json body
+func NewPatchKeysIdRequest(server string, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchKeysIdRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewPatchKeysIdRequestWithBody constructs an http.Request for the PatchKeysId method, with any body, and a specified content type
+func NewPatchKeysIdRequestWithBody(server string, id string, params *PatchKeysIdParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2087,10 +4920,12 @@ func NewPatchApiV1AdminKeysIdRequest(server string, id string, params *PatchApiV
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), nil)
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	if params != nil {
 
@@ -2110,8 +4945,42 @@ func NewPatchApiV1AdminKeysIdRequest(server string, id string, params *PatchApiV
 	return req, nil
 }
 
-// NewPostApiV1AdminKeysIdRotateRequest constructs an http.Request for the PostApiV1AdminKeysIdRotate method
-func NewPostApiV1AdminKeysIdRotateRequest(server string, id string) (*http.Request, error) {
+// NewPostKeysIdRevokeRequest constructs an http.Request for the PostKeysIdRevoke method
+func NewPostKeysIdRevokeRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/keys/%s/revoke", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostKeysIdRotateRequest constructs an http.Request for the PostKeysIdRotate method
+func NewPostKeysIdRotateRequest(server string, id string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2144,8 +5013,8 @@ func NewPostApiV1AdminKeysIdRotateRequest(server string, id string) (*http.Reque
 	return req, nil
 }
 
-// NewGetApiV1AdminKeysIdUsageRequest constructs an http.Request for the GetApiV1AdminKeysIdUsage method
-func NewGetApiV1AdminKeysIdUsageRequest(server string, id string) (*http.Request, error) {
+// NewGetKeysIdUsageRequest constructs an http.Request for the GetKeysIdUsage method
+func NewGetKeysIdUsageRequest(server string, id string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2178,8 +5047,8 @@ func NewGetApiV1AdminKeysIdUsageRequest(server string, id string) (*http.Request
 	return req, nil
 }
 
-// NewGetApiV1AdminModelsRequest constructs an http.Request for the GetApiV1AdminModels method
-func NewGetApiV1AdminModelsRequest(server string) (*http.Request, error) {
+// NewGetModelsRequest constructs an http.Request for the GetModels method
+func NewGetModelsRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2205,8 +5074,8 @@ func NewGetApiV1AdminModelsRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewGetApiV1AdminOpenapiJsonRequest constructs an http.Request for the GetApiV1AdminOpenapiJson method
-func NewGetApiV1AdminOpenapiJsonRequest(server string) (*http.Request, error) {
+// NewGetOpenapiJsonRequest constructs an http.Request for the GetOpenapiJson method
+func NewGetOpenapiJsonRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2232,8 +5101,57 @@ func NewGetApiV1AdminOpenapiJsonRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewGetApiV1AdminPluginsRequest constructs an http.Request for the GetApiV1AdminPlugins method
-func NewGetApiV1AdminPluginsRequest(server string, params *GetApiV1AdminPluginsParams) (*http.Request, error) {
+// NewDeleteOverlaySectionRequest constructs an http.Request for the DeleteOverlaySection method
+func NewDeleteOverlaySectionRequest(server string, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "section", section, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/overlay/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetPluginsRequest constructs an http.Request for the GetPlugins method
+func NewGetPluginsRequest(server string, params *GetPluginsParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2282,8 +5200,198 @@ func NewGetApiV1AdminPluginsRequest(server string, params *GetApiV1AdminPluginsP
 	return req, nil
 }
 
-// NewGetApiV1AdminPoolsRequest constructs an http.Request for the GetApiV1AdminPools method
-func NewGetApiV1AdminPoolsRequest(server string, params *GetApiV1AdminPoolsParams) (*http.Request, error) {
+// NewPostPluginsRequest calls the generic PostPlugins builder with application/json body
+func NewPostPluginsRequest(server string, body PostPluginsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostPluginsRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostPluginsRequestWithBody constructs an http.Request for the PostPlugins method, with any body, and a specified content type
+func NewPostPluginsRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/plugins")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewPostPluginsReloadRequest constructs an http.Request for the PostPluginsReload method
+func NewPostPluginsReloadRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/plugins/reload")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostPluginsRollbackRequest calls the generic PostPluginsRollback builder with application/json body
+func NewPostPluginsRollbackRequest(server string, params *PostPluginsRollbackParams, body PostPluginsRollbackJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostPluginsRollbackRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewPostPluginsRollbackRequestWithBody constructs an http.Request for the PostPluginsRollback method, with any body, and a specified content type
+func NewPostPluginsRollbackRequestWithBody(server string, params *PostPluginsRollbackParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/plugins/rollback")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeletePluginsFileRequest constructs an http.Request for the DeletePluginsFile method
+func NewDeletePluginsFileRequest(server string, file string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "file", file, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/plugins/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetPluginsFileSchemaRequest constructs an http.Request for the GetPluginsFileSchema method
+func NewGetPluginsFileSchemaRequest(server string, file string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "file", file, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/plugins/%s/schema", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetPoolsRequest constructs an http.Request for the GetPools method
+func NewGetPoolsRequest(server string, params *GetPoolsParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2336,8 +5444,8 @@ func NewGetApiV1AdminPoolsRequest(server string, params *GetApiV1AdminPoolsParam
 	return req, nil
 }
 
-// NewGetApiV1AdminPoolsNameRequest constructs an http.Request for the GetApiV1AdminPoolsName method
-func NewGetApiV1AdminPoolsNameRequest(server string, name string) (*http.Request, error) {
+// NewGetPoolsNameRequest constructs an http.Request for the GetPoolsName method
+func NewGetPoolsNameRequest(server string, name string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2370,8 +5478,8 @@ func NewGetApiV1AdminPoolsNameRequest(server string, name string) (*http.Request
 	return req, nil
 }
 
-// NewGetApiV1AdminProvidersRequest constructs an http.Request for the GetApiV1AdminProviders method
-func NewGetApiV1AdminProvidersRequest(server string) (*http.Request, error) {
+// NewGetProvidersRequest constructs an http.Request for the GetProviders method
+func NewGetProvidersRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2397,8 +5505,75 @@ func NewGetApiV1AdminProvidersRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewGetApiV1AdminUsageRequest constructs an http.Request for the GetApiV1AdminUsage method
-func NewGetApiV1AdminUsageRequest(server string, params *GetApiV1AdminUsageParams) (*http.Request, error) {
+// NewPostRestartRequest calls the generic PostRestart builder with application/json body
+func NewPostRestartRequest(server string, body PostRestartJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostRestartRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostRestartRequestWithBody constructs an http.Request for the PostRestart method, with any body, and a specified content type
+func NewPostRestartRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/restart")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewPostSigningKeyRotateRequest constructs an http.Request for the PostSigningKeyRotate method
+func NewPostSigningKeyRotateRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/signing-key/rotate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetUsageRequest constructs an http.Request for the GetUsage method
+func NewGetUsageRequest(server string, params *GetUsageParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2495,278 +5670,551 @@ func WithBaseURL(baseURL string) ClientOption {
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
 
-	// GetApiV1AdminAdminAuthWithResponse Admin-plane auth config (the admin surface guard)
+	// GetAdminAuthWithResponse Admin-plane auth config (the admin surface guard)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/admin-auth (the `GetApiV1AdminAdminAuth` operationId).
-	GetApiV1AdminAdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminAdminAuthResponse, error)
+	// Corresponds with GET /api/v1/admin/admin-auth (the `GetAdminAuth` operationId).
+	GetAdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAdminAuthResponse, error)
 
-	// PutApiV1AdminAdminAuthWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+	// PutAdminAuthWithBodyWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutApiV1AdminAdminAuth` operationId).
-	PutApiV1AdminAdminAuthWithResponse(ctx context.Context, params *PutApiV1AdminAdminAuthParams, reqEditors ...RequestEditorFn) (*PutApiV1AdminAdminAuthResponse, error)
+	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+	PutAdminAuthWithBodyWithResponse(ctx context.Context, params *PutAdminAuthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutAdminAuthResponse, error)
 
-	// GetApiV1AdminAuditWithResponse Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+	// PutAdminAuthWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/audit (the `GetApiV1AdminAudit` operationId).
-	GetApiV1AdminAuditWithResponse(ctx context.Context, params *GetApiV1AdminAuditParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminAuditResponse, error)
+	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+	PutAdminAuthWithResponse(ctx context.Context, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody, reqEditors ...RequestEditorFn) (*PutAdminAuthResponse, error)
 
-	// GetApiV1AdminAuthWithResponse Ingress auth chain + upstream-credential mode
+	// GetAuditWithResponse Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/auth (the `GetApiV1AdminAuth` operationId).
-	GetApiV1AdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminAuthResponse, error)
+	// Corresponds with GET /api/v1/admin/audit (the `GetAudit` operationId).
+	GetAuditWithResponse(ctx context.Context, params *GetAuditParams, reqEditors ...RequestEditorFn) (*GetAuditResponse, error)
 
-	// PostApiV1AdminAuthCacheFlushWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+	// GetAuthWithResponse Ingress auth chain + upstream-credential mode
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostApiV1AdminAuthCacheFlush` operationId).
-	PostApiV1AdminAuthCacheFlushWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminAuthCacheFlushResponse, error)
+	// Corresponds with GET /api/v1/admin/auth (the `GetAuth` operationId).
+	GetAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAuthResponse, error)
 
-	// GetApiV1AdminConfigWithResponse Effective running config snapshot (redacted)
+	// PostAuthCacheFlushWithBodyWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/config (the `GetApiV1AdminConfig` operationId).
-	GetApiV1AdminConfigWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigResponse, error)
+	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+	PostAuthCacheFlushWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostAuthCacheFlushResponse, error)
 
-	// PostApiV1AdminConfigApplyWithResponse Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
+	// PostAuthCacheFlushWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/config/apply (the `PostApiV1AdminConfigApply` operationId).
-	PostApiV1AdminConfigApplyWithResponse(ctx context.Context, params *PostApiV1AdminConfigApplyParams, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigApplyResponse, error)
+	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+	PostAuthCacheFlushWithResponse(ctx context.Context, body PostAuthCacheFlushJSONRequestBody, reqEditors ...RequestEditorFn) (*PostAuthCacheFlushResponse, error)
 
-	// GetApiV1AdminConfigDiffWithResponse Structured hook-surface diff between two retained versions
+	// GetConfigWithResponse Effective running config snapshot (redacted)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/config/diff (the `GetApiV1AdminConfigDiff` operationId).
-	GetApiV1AdminConfigDiffWithResponse(ctx context.Context, params *GetApiV1AdminConfigDiffParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigDiffResponse, error)
+	// Corresponds with GET /api/v1/admin/config (the `GetConfig` operationId).
+	GetConfigWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetConfigResponse, error)
 
-	// PostApiV1AdminConfigReloadWithResponse Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
+	// PostConfigApplyWithBodyWithResponse Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/config/reload (the `PostApiV1AdminConfigReload` operationId).
-	PostApiV1AdminConfigReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigReloadResponse, error)
+	// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+	PostConfigApplyWithBodyWithResponse(ctx context.Context, params *PostConfigApplyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostConfigApplyResponse, error)
 
-	// PostApiV1AdminConfigRollbackWithResponse Restore a retained version's hook surface (re-validated; a NEW version)
+	// PostConfigApplyWithResponse Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/config/rollback (the `PostApiV1AdminConfigRollback` operationId).
-	PostApiV1AdminConfigRollbackWithResponse(ctx context.Context, params *PostApiV1AdminConfigRollbackParams, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigRollbackResponse, error)
+	// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+	PostConfigApplyWithResponse(ctx context.Context, params *PostConfigApplyParams, body PostConfigApplyJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigApplyResponse, error)
 
-	// PostApiV1AdminConfigValidateWithResponse Dry-run validate a proposed config
+	// GetConfigDiffWithResponse Structured hook-surface diff between two retained versions
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/config/validate (the `PostApiV1AdminConfigValidate` operationId).
-	PostApiV1AdminConfigValidateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigValidateResponse, error)
+	// Corresponds with GET /api/v1/admin/config/diff (the `GetConfigDiff` operationId).
+	GetConfigDiffWithResponse(ctx context.Context, params *GetConfigDiffParams, reqEditors ...RequestEditorFn) (*GetConfigDiffResponse, error)
 
-	// GetApiV1AdminConfigVersionsWithResponse Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+	// PostConfigReloadWithResponse Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/config/versions (the `GetApiV1AdminConfigVersions` operationId).
-	GetApiV1AdminConfigVersionsWithResponse(ctx context.Context, params *GetApiV1AdminConfigVersionsParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigVersionsResponse, error)
+	// Corresponds with POST /api/v1/admin/config/reload (the `PostConfigReload` operationId).
+	PostConfigReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostConfigReloadResponse, error)
 
-	// GetApiV1AdminConfigVersionsVWithResponse One retained config version, with its hook-surface snapshot
+	// PostConfigRollbackWithBodyWithResponse Restore a retained version's hook surface (re-validated; a NEW version)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetApiV1AdminConfigVersionsV` operationId).
-	GetApiV1AdminConfigVersionsVWithResponse(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigVersionsVResponse, error)
+	// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+	PostConfigRollbackWithBodyWithResponse(ctx context.Context, params *PostConfigRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostConfigRollbackResponse, error)
 
-	// GetApiV1AdminHooksWithResponse Hook registry (definitions)
+	// PostConfigRollbackWithResponse Restore a retained version's hook surface (re-validated; a NEW version)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/hooks (the `GetApiV1AdminHooks` operationId).
-	GetApiV1AdminHooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksResponse, error)
+	// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+	PostConfigRollbackWithResponse(ctx context.Context, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigRollbackResponse, error)
 
-	// PostApiV1AdminHooksWithResponse Register (or replace) a hook at runtime — live immediately
+	// GetConfigSettingsWithResponse Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/hooks (the `PostApiV1AdminHooks` operationId).
-	PostApiV1AdminHooksWithResponse(ctx context.Context, params *PostApiV1AdminHooksParams, reqEditors ...RequestEditorFn) (*PostApiV1AdminHooksResponse, error)
+	// Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
+	GetConfigSettingsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetConfigSettingsResponse, error)
 
-	// DeleteApiV1AdminHooksNameWithResponse Remove a hook at runtime — live immediately
+	// PutConfigSettingsWithBodyWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteApiV1AdminHooksName` operationId).
-	DeleteApiV1AdminHooksNameWithResponse(ctx context.Context, name string, params *DeleteApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*DeleteApiV1AdminHooksNameResponse, error)
+	// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+	PutConfigSettingsWithBodyWithResponse(ctx context.Context, params *PutConfigSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutConfigSettingsResponse, error)
 
-	// GetApiV1AdminHooksNameWithResponse One hook definition
+	// PutConfigSettingsWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetApiV1AdminHooksName` operationId).
-	GetApiV1AdminHooksNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameResponse, error)
+	// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+	PutConfigSettingsWithResponse(ctx context.Context, params *PutConfigSettingsParams, body PutConfigSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PutConfigSettingsResponse, error)
 
-	// PutApiV1AdminHooksNameWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+	// PostConfigValidateWithBodyWithResponse Dry-run validate a proposed config
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutApiV1AdminHooksName` operationId).
-	PutApiV1AdminHooksNameWithResponse(ctx context.Context, name string, params *PutApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*PutApiV1AdminHooksNameResponse, error)
+	// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+	PostConfigValidateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostConfigValidateResponse, error)
 
-	// GetApiV1AdminHooksNameHealthWithResponse Best-effort hook transport reachability
+	// PostConfigValidateWithResponse Dry-run validate a proposed config
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetApiV1AdminHooksNameHealth` operationId).
-	GetApiV1AdminHooksNameHealthWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameHealthResponse, error)
+	// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+	PostConfigValidateWithResponse(ctx context.Context, body PostConfigValidateJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigValidateResponse, error)
 
-	// GetApiV1AdminHooksNameSchemaWithResponse The hook's self-described settings JSON Schema (describe proxy)
+	// GetConfigVersionsWithResponse Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetApiV1AdminHooksNameSchema` operationId).
-	GetApiV1AdminHooksNameSchemaWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameSchemaResponse, error)
+	// Corresponds with GET /api/v1/admin/config/versions (the `GetConfigVersions` operationId).
+	GetConfigVersionsWithResponse(ctx context.Context, params *GetConfigVersionsParams, reqEditors ...RequestEditorFn) (*GetConfigVersionsResponse, error)
 
-	// PatchApiV1AdminHooksNameSettingsWithResponse Push an opaque settings map to the running hook; COMMIT ON ACK
+	// GetConfigVersionsVWithResponse One retained config version, with its hook-surface snapshot
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchApiV1AdminHooksNameSettings` operationId).
-	PatchApiV1AdminHooksNameSettingsWithResponse(ctx context.Context, name string, params *PatchApiV1AdminHooksNameSettingsParams, reqEditors ...RequestEditorFn) (*PatchApiV1AdminHooksNameSettingsResponse, error)
+	// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetConfigVersionsV` operationId).
+	GetConfigVersionsVWithResponse(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*GetConfigVersionsVResponse, error)
 
-	// GetApiV1AdminHooksNameStatusWithResponse The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+	// GetGroupsWithResponse Group registry — the limit tree (parent chain, limits, child_default budget template)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetApiV1AdminHooksNameStatus` operationId).
-	GetApiV1AdminHooksNameStatusWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameStatusResponse, error)
+	// Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
+	GetGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGroupsResponse, error)
 
-	// GetApiV1AdminInfoWithResponse Version, compiled-in plugin proof, uptime, topology
+	// PostGroupsWithBodyWithResponse Create (or replace) a group at runtime — live immediately (upsert)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/info (the `GetApiV1AdminInfo` operationId).
-	GetApiV1AdminInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminInfoResponse, error)
+	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+	PostGroupsWithBodyWithResponse(ctx context.Context, params *PostGroupsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostGroupsResponse, error)
 
-	// GetApiV1AdminKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)
+	// PostGroupsWithResponse Create (or replace) a group at runtime — live immediately (upsert)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/keys (the `GetApiV1AdminKeys` operationId).
-	GetApiV1AdminKeysWithResponse(ctx context.Context, params *GetApiV1AdminKeysParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminKeysResponse, error)
+	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+	PostGroupsWithResponse(ctx context.Context, params *PostGroupsParams, body PostGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostGroupsResponse, error)
 
-	// PostApiV1AdminKeysWithResponse Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+	// DeleteGroupsNameWithResponse Remove an overlay group at runtime — live immediately
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/keys (the `PostApiV1AdminKeys` operationId).
-	PostApiV1AdminKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminKeysResponse, error)
+	// Corresponds with DELETE /api/v1/admin/groups/{name} (the `DeleteGroupsName` operationId).
+	DeleteGroupsNameWithResponse(ctx context.Context, name string, params *DeleteGroupsNameParams, reqEditors ...RequestEditorFn) (*DeleteGroupsNameResponse, error)
 
-	// DeleteApiV1AdminKeysIdWithResponse Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+	// GetGroupsNameWithResponse One group definition (parent, enabled, limits, child_default)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteApiV1AdminKeysId` operationId).
-	DeleteApiV1AdminKeysIdWithResponse(ctx context.Context, id string, params *DeleteApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*DeleteApiV1AdminKeysIdResponse, error)
+	// Corresponds with GET /api/v1/admin/groups/{name} (the `GetGroupsName` operationId).
+	GetGroupsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetGroupsNameResponse, error)
 
-	// GetApiV1AdminKeysIdWithResponse One key's metadata + `ETag` (never the secret/hash)
+	// PatchGroupsNameWithBodyWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/keys/{id} (the `GetApiV1AdminKeysId` operationId).
-	GetApiV1AdminKeysIdWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetApiV1AdminKeysIdResponse, error)
+	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+	PatchGroupsNameWithBodyWithResponse(ctx context.Context, name string, params *PatchGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchGroupsNameResponse, error)
 
-	// PatchApiV1AdminKeysIdWithResponse Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency
+	// PatchGroupsNameWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchApiV1AdminKeysId` operationId).
-	PatchApiV1AdminKeysIdWithResponse(ctx context.Context, id string, params *PatchApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*PatchApiV1AdminKeysIdResponse, error)
+	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+	PatchGroupsNameWithResponse(ctx context.Context, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchGroupsNameResponse, error)
 
-	// PostApiV1AdminKeysIdRotateWithResponse Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+	// PutGroupsNameWithBodyWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostApiV1AdminKeysIdRotate` operationId).
-	PostApiV1AdminKeysIdRotateWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*PostApiV1AdminKeysIdRotateResponse, error)
+	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+	PutGroupsNameWithBodyWithResponse(ctx context.Context, name string, params *PutGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutGroupsNameResponse, error)
 
-	// GetApiV1AdminKeysIdUsageWithResponse Current-window usage for one key (spend / tokens / requests)
+	// PutGroupsNameWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetApiV1AdminKeysIdUsage` operationId).
-	GetApiV1AdminKeysIdUsageWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetApiV1AdminKeysIdUsageResponse, error)
+	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+	PutGroupsNameWithResponse(ctx context.Context, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutGroupsNameResponse, error)
 
-	// GetApiV1AdminModelsWithResponse Model lanes + upstream providers
+	// GetGroupsNameUsageWithResponse The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/models (the `GetApiV1AdminModels` operationId).
-	GetApiV1AdminModelsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminModelsResponse, error)
+	// Corresponds with GET /api/v1/admin/groups/{name}/usage (the `GetGroupsNameUsage` operationId).
+	GetGroupsNameUsageWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetGroupsNameUsageResponse, error)
 
-	// GetApiV1AdminOpenapiJsonWithResponse This OpenAPI 3.1 document
+	// GetHooksWithResponse Hook registry (definitions)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/openapi.json (the `GetApiV1AdminOpenapiJson` operationId).
-	GetApiV1AdminOpenapiJsonWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminOpenapiJsonResponse, error)
+	// Corresponds with GET /api/v1/admin/hooks (the `GetHooks` operationId).
+	GetHooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHooksResponse, error)
 
-	// GetApiV1AdminPluginsWithResponse Plugin catalog by type (compiled-in + external)
+	// PostHooksWithBodyWithResponse Register (or replace) a hook at runtime — live immediately
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/plugins (the `GetApiV1AdminPlugins` operationId).
-	GetApiV1AdminPluginsWithResponse(ctx context.Context, params *GetApiV1AdminPluginsParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminPluginsResponse, error)
+	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+	PostHooksWithBodyWithResponse(ctx context.Context, params *PostHooksParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostHooksResponse, error)
 
-	// GetApiV1AdminPoolsWithResponse Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+	// PostHooksWithResponse Register (or replace) a hook at runtime — live immediately
 	//
-	// Returns a wrapper object for the known response body format(s).
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/pools (the `GetApiV1AdminPools` operationId).
-	GetApiV1AdminPoolsWithResponse(ctx context.Context, params *GetApiV1AdminPoolsParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminPoolsResponse, error)
+	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+	PostHooksWithResponse(ctx context.Context, params *PostHooksParams, body PostHooksJSONRequestBody, reqEditors ...RequestEditorFn) (*PostHooksResponse, error)
 
-	// GetApiV1AdminPoolsNameWithResponse Live per-member status of one pool (breaker/concurrency/latency)
+	// DeleteHooksNameWithResponse Remove a hook at runtime — live immediately
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/pools/{name} (the `GetApiV1AdminPoolsName` operationId).
-	GetApiV1AdminPoolsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminPoolsNameResponse, error)
+	// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteHooksName` operationId).
+	DeleteHooksNameWithResponse(ctx context.Context, name string, params *DeleteHooksNameParams, reqEditors ...RequestEditorFn) (*DeleteHooksNameResponse, error)
 
-	// GetApiV1AdminProvidersWithResponse Distinct providers + lane counts
+	// GetHooksNameWithResponse One hook definition
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/providers (the `GetApiV1AdminProviders` operationId).
-	GetApiV1AdminProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminProvidersResponse, error)
+	// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetHooksName` operationId).
+	GetHooksNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameResponse, error)
 
-	// GetApiV1AdminUsageWithResponse Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+	// PutHooksNameWithBodyWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+	PutHooksNameWithBodyWithResponse(ctx context.Context, name string, params *PutHooksNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutHooksNameResponse, error)
+
+	// PutHooksNameWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+	PutHooksNameWithResponse(ctx context.Context, name string, params *PutHooksNameParams, body PutHooksNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutHooksNameResponse, error)
+
+	// GetHooksNameHealthWithResponse Best-effort hook transport reachability
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
-	// Corresponds with GET /api/v1/admin/usage (the `GetApiV1AdminUsage` operationId).
-	GetApiV1AdminUsageWithResponse(ctx context.Context, params *GetApiV1AdminUsageParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminUsageResponse, error)
+	// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetHooksNameHealth` operationId).
+	GetHooksNameHealthWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameHealthResponse, error)
+
+	// GetHooksNameSchemaWithResponse The hook's self-described settings JSON Schema (describe proxy)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetHooksNameSchema` operationId).
+	GetHooksNameSchemaWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameSchemaResponse, error)
+
+	// PatchHooksNameSettingsWithBodyWithResponse Push an opaque settings map to the running hook; COMMIT ON ACK
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+	PatchHooksNameSettingsWithBodyWithResponse(ctx context.Context, name string, params *PatchHooksNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchHooksNameSettingsResponse, error)
+
+	// PatchHooksNameSettingsWithResponse Push an opaque settings map to the running hook; COMMIT ON ACK
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+	PatchHooksNameSettingsWithResponse(ctx context.Context, name string, params *PatchHooksNameSettingsParams, body PatchHooksNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchHooksNameSettingsResponse, error)
+
+	// GetHooksNameStatusWithResponse The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetHooksNameStatus` operationId).
+	GetHooksNameStatusWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameStatusResponse, error)
+
+	// GetInfoWithResponse Version, compiled-in plugin proof, uptime, topology
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
+	GetInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetInfoResponse, error)
+
+	// GetKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/keys (the `GetKeys` operationId).
+	GetKeysWithResponse(ctx context.Context, params *GetKeysParams, reqEditors ...RequestEditorFn) (*GetKeysResponse, error)
+
+	// PostKeysWithBodyWithResponse Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+	PostKeysWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostKeysResponse, error)
+
+	// PostKeysWithResponse Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+	PostKeysWithResponse(ctx context.Context, body PostKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*PostKeysResponse, error)
+
+	// DeleteKeysIdWithResponse Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteKeysId` operationId).
+	DeleteKeysIdWithResponse(ctx context.Context, id string, params *DeleteKeysIdParams, reqEditors ...RequestEditorFn) (*DeleteKeysIdResponse, error)
+
+	// GetKeysIdWithResponse One key's metadata + `ETag` (never the secret/hash)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/keys/{id} (the `GetKeysId` operationId).
+	GetKeysIdWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetKeysIdResponse, error)
+
+	// PatchKeysIdWithBodyWithResponse Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+	PatchKeysIdWithBodyWithResponse(ctx context.Context, id string, params *PatchKeysIdParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchKeysIdResponse, error)
+
+	// PatchKeysIdWithResponse Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+	PatchKeysIdWithResponse(ctx context.Context, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchKeysIdResponse, error)
+
+	// PostKeysIdRevokeWithResponse REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/keys/{id}/revoke (the `PostKeysIdRevoke` operationId).
+	PostKeysIdRevokeWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*PostKeysIdRevokeResponse, error)
+
+	// PostKeysIdRotateWithResponse Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostKeysIdRotate` operationId).
+	PostKeysIdRotateWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*PostKeysIdRotateResponse, error)
+
+	// GetKeysIdUsageWithResponse Current-window usage for one key (spend / tokens / requests)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetKeysIdUsage` operationId).
+	GetKeysIdUsageWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetKeysIdUsageResponse, error)
+
+	// GetModelsWithResponse Model lanes + upstream providers
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/models (the `GetModels` operationId).
+	GetModelsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetModelsResponse, error)
+
+	// GetOpenapiJsonWithResponse This OpenAPI 3.1 document
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/openapi.json (the `GetOpenapiJson` operationId).
+	GetOpenapiJsonWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOpenapiJsonResponse, error)
+
+	// DeleteOverlaySectionWithResponse DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/admin/overlay/{section} (the `DeleteOverlaySection` operationId).
+	DeleteOverlaySectionWithResponse(ctx context.Context, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams, reqEditors ...RequestEditorFn) (*DeleteOverlaySectionResponse, error)
+
+	// GetPluginsWithResponse Plugin catalog by type (compiled-in + external + dynamic-library)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/plugins (the `GetPlugins` operationId).
+	GetPluginsWithResponse(ctx context.Context, params *GetPluginsParams, reqEditors ...RequestEditorFn) (*GetPluginsResponse, error)
+
+	// PostPluginsWithBodyWithResponse Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+	PostPluginsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsResponse, error)
+
+	// PostPluginsWithResponse Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+	PostPluginsWithResponse(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsResponse, error)
+
+	// PostPluginsReloadWithResponse Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins/reload (the `PostPluginsReload` operationId).
+	PostPluginsReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostPluginsReloadResponse, error)
+
+	// PostPluginsRollbackWithBodyWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+	PostPluginsRollbackWithBodyWithResponse(ctx context.Context, params *PostPluginsRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsRollbackResponse, error)
+
+	// PostPluginsRollbackWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+	PostPluginsRollbackWithResponse(ctx context.Context, params *PostPluginsRollbackParams, body PostPluginsRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsRollbackResponse, error)
+
+	// DeletePluginsFileWithResponse Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/admin/plugins/{file} (the `DeletePluginsFile` operationId).
+	DeletePluginsFileWithResponse(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*DeletePluginsFileResponse, error)
+
+	// GetPluginsFileSchemaWithResponse The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/plugins/{file}/schema (the `GetPluginsFileSchema` operationId).
+	GetPluginsFileSchemaWithResponse(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*GetPluginsFileSchemaResponse, error)
+
+	// GetPoolsWithResponse Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/pools (the `GetPools` operationId).
+	GetPoolsWithResponse(ctx context.Context, params *GetPoolsParams, reqEditors ...RequestEditorFn) (*GetPoolsResponse, error)
+
+	// GetPoolsNameWithResponse Live per-member status of one pool (breaker/concurrency/latency)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/pools/{name} (the `GetPoolsName` operationId).
+	GetPoolsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetPoolsNameResponse, error)
+
+	// GetProvidersWithResponse Distinct providers + lane counts
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/providers (the `GetProviders` operationId).
+	GetProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetProvidersResponse, error)
+
+	// PostRestartWithBodyWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+	PostRestartWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostRestartResponse, error)
+
+	// PostRestartWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+	PostRestartWithResponse(ctx context.Context, body PostRestartJSONRequestBody, reqEditors ...RequestEditorFn) (*PostRestartResponse, error)
+
+	// PostSigningKeyRotateWithResponse ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
+	PostSigningKeyRotateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSigningKeyRotateResponse, error)
+
+	// GetUsageWithResponse Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/usage (the `GetUsage` operationId).
+	GetUsageWithResponse(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*GetUsageResponse, error)
 }
 
-type GetApiV1AdminAdminAuthResponse struct {
+type GetAdminAuthResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *AdminAuthView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetAdminAuthResponse) GetJSON200() *AdminAuthView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetAdminAuthResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetAdminAuthResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetAdminAuthResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminAdminAuthResponse) GetBody() []byte {
+func (r GetAdminAuthResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminAdminAuthResponse) Status() string {
+func (r GetAdminAuthResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2774,7 +6222,7 @@ func (r GetApiV1AdminAdminAuthResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminAdminAuthResponse) StatusCode() int {
+func (r GetAdminAuthResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2782,25 +6230,74 @@ func (r GetApiV1AdminAdminAuthResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminAdminAuthResponse) ContentType() string {
+func (r GetAdminAuthResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PutApiV1AdminAdminAuthResponse struct {
+type PutAdminAuthResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *AdminAuthPutView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutAdminAuthResponse) GetJSON200() *AdminAuthPutView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PutAdminAuthResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PutAdminAuthResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PutAdminAuthResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PutAdminAuthResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PutAdminAuthResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PutAdminAuthResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PutApiV1AdminAdminAuthResponse) GetBody() []byte {
+func (r PutAdminAuthResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PutApiV1AdminAdminAuthResponse) Status() string {
+func (r PutAdminAuthResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2808,7 +6305,7 @@ func (r PutApiV1AdminAdminAuthResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PutApiV1AdminAdminAuthResponse) StatusCode() int {
+func (r PutAdminAuthResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2816,25 +6313,60 @@ func (r PutApiV1AdminAdminAuthResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PutApiV1AdminAdminAuthResponse) ContentType() string {
+func (r PutAdminAuthResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminAuditResponse struct {
+type GetAuditResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *AuditPageView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetAuditResponse) GetJSON200() *AuditPageView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetAuditResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetAuditResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetAuditResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetAuditResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminAuditResponse) GetBody() []byte {
+func (r GetAuditResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminAuditResponse) Status() string {
+func (r GetAuditResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2842,7 +6374,7 @@ func (r GetApiV1AdminAuditResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminAuditResponse) StatusCode() int {
+func (r GetAuditResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2850,25 +6382,53 @@ func (r GetApiV1AdminAuditResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminAuditResponse) ContentType() string {
+func (r GetAuditResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminAuthResponse struct {
+type GetAuthResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *AuthView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetAuthResponse) GetJSON200() *AuthView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetAuthResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetAuthResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetAuthResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminAuthResponse) GetBody() []byte {
+func (r GetAuthResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminAuthResponse) Status() string {
+func (r GetAuthResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2876,7 +6436,7 @@ func (r GetApiV1AdminAuthResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminAuthResponse) StatusCode() int {
+func (r GetAuthResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2884,25 +6444,67 @@ func (r GetApiV1AdminAuthResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminAuthResponse) ContentType() string {
+func (r GetAuthResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminAuthCacheFlushResponse struct {
+type PostAuthCacheFlushResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *CacheFlushView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostAuthCacheFlushResponse) GetJSON200() *CacheFlushView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostAuthCacheFlushResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostAuthCacheFlushResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostAuthCacheFlushResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostAuthCacheFlushResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostAuthCacheFlushResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminAuthCacheFlushResponse) GetBody() []byte {
+func (r PostAuthCacheFlushResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminAuthCacheFlushResponse) Status() string {
+func (r PostAuthCacheFlushResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2910,7 +6512,7 @@ func (r PostApiV1AdminAuthCacheFlushResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminAuthCacheFlushResponse) StatusCode() int {
+func (r PostAuthCacheFlushResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2918,25 +6520,53 @@ func (r PostApiV1AdminAuthCacheFlushResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminAuthCacheFlushResponse) ContentType() string {
+func (r PostAuthCacheFlushResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminConfigResponse struct {
+type GetConfigResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *EffectiveConfigView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetConfigResponse) GetJSON200() *EffectiveConfigView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetConfigResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetConfigResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetConfigResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminConfigResponse) GetBody() []byte {
+func (r GetConfigResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminConfigResponse) Status() string {
+func (r GetConfigResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2944,7 +6574,7 @@ func (r GetApiV1AdminConfigResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminConfigResponse) StatusCode() int {
+func (r GetConfigResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2952,25 +6582,74 @@ func (r GetApiV1AdminConfigResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminConfigResponse) ContentType() string {
+func (r GetConfigResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminConfigApplyResponse struct {
+type PostConfigApplyResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigApplyView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostConfigApplyResponse) GetJSON200() *ConfigApplyView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostConfigApplyResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostConfigApplyResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostConfigApplyResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostConfigApplyResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostConfigApplyResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostConfigApplyResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminConfigApplyResponse) GetBody() []byte {
+func (r PostConfigApplyResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminConfigApplyResponse) Status() string {
+func (r PostConfigApplyResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -2978,7 +6657,7 @@ func (r PostApiV1AdminConfigApplyResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminConfigApplyResponse) StatusCode() int {
+func (r PostConfigApplyResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2986,25 +6665,67 @@ func (r PostApiV1AdminConfigApplyResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminConfigApplyResponse) ContentType() string {
+func (r PostConfigApplyResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminConfigDiffResponse struct {
+type GetConfigDiffResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigDiffView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetConfigDiffResponse) GetJSON200() *ConfigDiffView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetConfigDiffResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetConfigDiffResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetConfigDiffResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetConfigDiffResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetConfigDiffResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminConfigDiffResponse) GetBody() []byte {
+func (r GetConfigDiffResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminConfigDiffResponse) Status() string {
+func (r GetConfigDiffResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3012,7 +6733,7 @@ func (r GetApiV1AdminConfigDiffResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminConfigDiffResponse) StatusCode() int {
+func (r GetConfigDiffResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3020,25 +6741,67 @@ func (r GetApiV1AdminConfigDiffResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminConfigDiffResponse) ContentType() string {
+func (r GetConfigDiffResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminConfigReloadResponse struct {
+type PostConfigReloadResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigReloadView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostConfigReloadResponse) GetJSON200() *ConfigReloadView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostConfigReloadResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostConfigReloadResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostConfigReloadResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostConfigReloadResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostConfigReloadResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminConfigReloadResponse) GetBody() []byte {
+func (r PostConfigReloadResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminConfigReloadResponse) Status() string {
+func (r PostConfigReloadResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3046,7 +6809,7 @@ func (r PostApiV1AdminConfigReloadResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminConfigReloadResponse) StatusCode() int {
+func (r PostConfigReloadResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3054,25 +6817,81 @@ func (r PostApiV1AdminConfigReloadResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminConfigReloadResponse) ContentType() string {
+func (r PostConfigReloadResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminConfigRollbackResponse struct {
+type PostConfigRollbackResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigRollbackView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON200() *ConfigRollbackView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostConfigRollbackResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminConfigRollbackResponse) GetBody() []byte {
+func (r PostConfigRollbackResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminConfigRollbackResponse) Status() string {
+func (r PostConfigRollbackResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3080,7 +6899,7 @@ func (r PostApiV1AdminConfigRollbackResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminConfigRollbackResponse) StatusCode() int {
+func (r PostConfigRollbackResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3088,25 +6907,53 @@ func (r PostApiV1AdminConfigRollbackResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminConfigRollbackResponse) ContentType() string {
+func (r PostConfigRollbackResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminConfigValidateResponse struct {
+type GetConfigSettingsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigSettingsView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetConfigSettingsResponse) GetJSON200() *ConfigSettingsView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetConfigSettingsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetConfigSettingsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetConfigSettingsResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminConfigValidateResponse) GetBody() []byte {
+func (r GetConfigSettingsResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminConfigValidateResponse) Status() string {
+func (r GetConfigSettingsResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3114,7 +6961,7 @@ func (r PostApiV1AdminConfigValidateResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminConfigValidateResponse) StatusCode() int {
+func (r GetConfigSettingsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3122,25 +6969,74 @@ func (r PostApiV1AdminConfigValidateResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminConfigValidateResponse) ContentType() string {
+func (r GetConfigSettingsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminConfigVersionsResponse struct {
+type PutConfigSettingsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigSettingsView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON200() *ConfigSettingsView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PutConfigSettingsResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminConfigVersionsResponse) GetBody() []byte {
+func (r PutConfigSettingsResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminConfigVersionsResponse) Status() string {
+func (r PutConfigSettingsResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3148,7 +7044,7 @@ func (r GetApiV1AdminConfigVersionsResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminConfigVersionsResponse) StatusCode() int {
+func (r PutConfigSettingsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3156,25 +7052,67 @@ func (r GetApiV1AdminConfigVersionsResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminConfigVersionsResponse) ContentType() string {
+func (r PutConfigSettingsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminConfigVersionsVResponse struct {
+type PostConfigValidateResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigValidateView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostConfigValidateResponse) GetJSON200() *ConfigValidateView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostConfigValidateResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostConfigValidateResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostConfigValidateResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostConfigValidateResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostConfigValidateResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminConfigVersionsVResponse) GetBody() []byte {
+func (r PostConfigValidateResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminConfigVersionsVResponse) Status() string {
+func (r PostConfigValidateResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3182,7 +7120,7 @@ func (r GetApiV1AdminConfigVersionsVResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminConfigVersionsVResponse) StatusCode() int {
+func (r PostConfigValidateResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3190,25 +7128,60 @@ func (r GetApiV1AdminConfigVersionsVResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminConfigVersionsVResponse) ContentType() string {
+func (r PostConfigValidateResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminHooksResponse struct {
+type GetConfigVersionsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigVersionPageView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetConfigVersionsResponse) GetJSON200() *ConfigVersionPageView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetConfigVersionsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetConfigVersionsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetConfigVersionsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetConfigVersionsResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminHooksResponse) GetBody() []byte {
+func (r GetConfigVersionsResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminHooksResponse) Status() string {
+func (r GetConfigVersionsResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3216,7 +7189,7 @@ func (r GetApiV1AdminHooksResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminHooksResponse) StatusCode() int {
+func (r GetConfigVersionsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3224,25 +7197,67 @@ func (r GetApiV1AdminHooksResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminHooksResponse) ContentType() string {
+func (r GetConfigVersionsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminHooksResponse struct {
+type GetConfigVersionsVResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ConfigVersionDetailView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetConfigVersionsVResponse) GetJSON200() *ConfigVersionDetailView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetConfigVersionsVResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetConfigVersionsVResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetConfigVersionsVResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetConfigVersionsVResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetConfigVersionsVResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminHooksResponse) GetBody() []byte {
+func (r GetConfigVersionsVResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminHooksResponse) Status() string {
+func (r GetConfigVersionsVResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3250,7 +7265,7 @@ func (r PostApiV1AdminHooksResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminHooksResponse) StatusCode() int {
+func (r GetConfigVersionsVResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3258,25 +7273,53 @@ func (r PostApiV1AdminHooksResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminHooksResponse) ContentType() string {
+func (r GetConfigVersionsVResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type DeleteApiV1AdminHooksNameResponse struct {
+type GetGroupsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PageGroupView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetGroupsResponse) GetJSON200() *PageGroupView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetGroupsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetGroupsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetGroupsResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r DeleteApiV1AdminHooksNameResponse) GetBody() []byte {
+func (r GetGroupsResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r DeleteApiV1AdminHooksNameResponse) Status() string {
+func (r GetGroupsResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3284,7 +7327,7 @@ func (r DeleteApiV1AdminHooksNameResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r DeleteApiV1AdminHooksNameResponse) StatusCode() int {
+func (r GetGroupsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3292,25 +7335,81 @@ func (r DeleteApiV1AdminHooksNameResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r DeleteApiV1AdminHooksNameResponse) ContentType() string {
+func (r GetGroupsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminHooksNameResponse struct {
+type PostGroupsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *GroupView
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *GroupView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostGroupsResponse) GetJSON200() *GroupView {
+	return r.JSON200
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r PostGroupsResponse) GetJSON201() *GroupView {
+	return r.JSON201
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostGroupsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostGroupsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostGroupsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostGroupsResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostGroupsResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostGroupsResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminHooksNameResponse) GetBody() []byte {
+func (r PostGroupsResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminHooksNameResponse) Status() string {
+func (r PostGroupsResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3318,7 +7417,7 @@ func (r GetApiV1AdminHooksNameResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminHooksNameResponse) StatusCode() int {
+func (r PostGroupsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3326,25 +7425,74 @@ func (r GetApiV1AdminHooksNameResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminHooksNameResponse) ContentType() string {
+func (r PostGroupsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PutApiV1AdminHooksNameResponse struct {
+type DeleteGroupsNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteGroupsNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PutApiV1AdminHooksNameResponse) GetBody() []byte {
+func (r DeleteGroupsNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PutApiV1AdminHooksNameResponse) Status() string {
+func (r DeleteGroupsNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3352,7 +7500,7 @@ func (r PutApiV1AdminHooksNameResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PutApiV1AdminHooksNameResponse) StatusCode() int {
+func (r DeleteGroupsNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3360,25 +7508,60 @@ func (r PutApiV1AdminHooksNameResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PutApiV1AdminHooksNameResponse) ContentType() string {
+func (r DeleteGroupsNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminHooksNameHealthResponse struct {
+type GetGroupsNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *GroupView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetGroupsNameResponse) GetJSON200() *GroupView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetGroupsNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetGroupsNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetGroupsNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetGroupsNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminHooksNameHealthResponse) GetBody() []byte {
+func (r GetGroupsNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminHooksNameHealthResponse) Status() string {
+func (r GetGroupsNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3386,7 +7569,7 @@ func (r GetApiV1AdminHooksNameHealthResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminHooksNameHealthResponse) StatusCode() int {
+func (r GetGroupsNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3394,25 +7577,81 @@ func (r GetApiV1AdminHooksNameHealthResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminHooksNameHealthResponse) ContentType() string {
+func (r GetGroupsNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminHooksNameSchemaResponse struct {
+type PatchGroupsNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *GroupView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON200() *GroupView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PatchGroupsNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminHooksNameSchemaResponse) GetBody() []byte {
+func (r PatchGroupsNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminHooksNameSchemaResponse) Status() string {
+func (r PatchGroupsNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3420,7 +7659,7 @@ func (r GetApiV1AdminHooksNameSchemaResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminHooksNameSchemaResponse) StatusCode() int {
+func (r PatchGroupsNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3428,25 +7667,81 @@ func (r GetApiV1AdminHooksNameSchemaResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminHooksNameSchemaResponse) ContentType() string {
+func (r PatchGroupsNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PatchApiV1AdminHooksNameSettingsResponse struct {
+type PutGroupsNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *GroupView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutGroupsNameResponse) GetJSON200() *GroupView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PutGroupsNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PutGroupsNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PutGroupsNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PutGroupsNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PutGroupsNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PutGroupsNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PutGroupsNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PatchApiV1AdminHooksNameSettingsResponse) GetBody() []byte {
+func (r PutGroupsNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PatchApiV1AdminHooksNameSettingsResponse) Status() string {
+func (r PutGroupsNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3454,7 +7749,7 @@ func (r PatchApiV1AdminHooksNameSettingsResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PatchApiV1AdminHooksNameSettingsResponse) StatusCode() int {
+func (r PutGroupsNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3462,25 +7757,60 @@ func (r PatchApiV1AdminHooksNameSettingsResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PatchApiV1AdminHooksNameSettingsResponse) ContentType() string {
+func (r PutGroupsNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminHooksNameStatusResponse struct {
+type GetGroupsNameUsageResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *GroupUsageView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetGroupsNameUsageResponse) GetJSON200() *GroupUsageView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetGroupsNameUsageResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetGroupsNameUsageResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetGroupsNameUsageResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetGroupsNameUsageResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminHooksNameStatusResponse) GetBody() []byte {
+func (r GetGroupsNameUsageResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminHooksNameStatusResponse) Status() string {
+func (r GetGroupsNameUsageResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3488,7 +7818,7 @@ func (r GetApiV1AdminHooksNameStatusResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminHooksNameStatusResponse) StatusCode() int {
+func (r GetGroupsNameUsageResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3496,25 +7826,53 @@ func (r GetApiV1AdminHooksNameStatusResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminHooksNameStatusResponse) ContentType() string {
+func (r GetGroupsNameUsageResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminInfoResponse struct {
+type GetHooksResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PageHookView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetHooksResponse) GetJSON200() *PageHookView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetHooksResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetHooksResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetHooksResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminInfoResponse) GetBody() []byte {
+func (r GetHooksResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminInfoResponse) Status() string {
+func (r GetHooksResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3522,7 +7880,7 @@ func (r GetApiV1AdminInfoResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminInfoResponse) StatusCode() int {
+func (r GetHooksResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3530,25 +7888,81 @@ func (r GetApiV1AdminInfoResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminInfoResponse) ContentType() string {
+func (r GetHooksResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminKeysResponse struct {
+type PostHooksResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookView
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *HookView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostHooksResponse) GetJSON200() *HookView {
+	return r.JSON200
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r PostHooksResponse) GetJSON201() *HookView {
+	return r.JSON201
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostHooksResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostHooksResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostHooksResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostHooksResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostHooksResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostHooksResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminKeysResponse) GetBody() []byte {
+func (r PostHooksResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminKeysResponse) Status() string {
+func (r PostHooksResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3556,7 +7970,7 @@ func (r GetApiV1AdminKeysResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminKeysResponse) StatusCode() int {
+func (r PostHooksResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3564,25 +7978,74 @@ func (r GetApiV1AdminKeysResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminKeysResponse) ContentType() string {
+func (r PostHooksResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminKeysResponse struct {
+type DeleteHooksNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteHooksNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminKeysResponse) GetBody() []byte {
+func (r DeleteHooksNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminKeysResponse) Status() string {
+func (r DeleteHooksNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3590,7 +8053,7 @@ func (r PostApiV1AdminKeysResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminKeysResponse) StatusCode() int {
+func (r DeleteHooksNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3598,25 +8061,60 @@ func (r PostApiV1AdminKeysResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminKeysResponse) ContentType() string {
+func (r DeleteHooksNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type DeleteApiV1AdminKeysIdResponse struct {
+type GetHooksNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetHooksNameResponse) GetJSON200() *HookView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetHooksNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetHooksNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetHooksNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetHooksNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r DeleteApiV1AdminKeysIdResponse) GetBody() []byte {
+func (r GetHooksNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r DeleteApiV1AdminKeysIdResponse) Status() string {
+func (r GetHooksNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3624,7 +8122,7 @@ func (r DeleteApiV1AdminKeysIdResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r DeleteApiV1AdminKeysIdResponse) StatusCode() int {
+func (r GetHooksNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3632,25 +8130,81 @@ func (r DeleteApiV1AdminKeysIdResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r DeleteApiV1AdminKeysIdResponse) ContentType() string {
+func (r GetHooksNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminKeysIdResponse struct {
+type PutHooksNameResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutHooksNameResponse) GetJSON200() *HookView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PutHooksNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PutHooksNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PutHooksNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PutHooksNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PutHooksNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PutHooksNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PutHooksNameResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminKeysIdResponse) GetBody() []byte {
+func (r PutHooksNameResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminKeysIdResponse) Status() string {
+func (r PutHooksNameResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3658,7 +8212,7 @@ func (r GetApiV1AdminKeysIdResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminKeysIdResponse) StatusCode() int {
+func (r PutHooksNameResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3666,25 +8220,60 @@ func (r GetApiV1AdminKeysIdResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminKeysIdResponse) ContentType() string {
+func (r PutHooksNameResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PatchApiV1AdminKeysIdResponse struct {
+type GetHooksNameHealthResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookHealthView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetHooksNameHealthResponse) GetJSON200() *HookHealthView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetHooksNameHealthResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetHooksNameHealthResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetHooksNameHealthResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetHooksNameHealthResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PatchApiV1AdminKeysIdResponse) GetBody() []byte {
+func (r GetHooksNameHealthResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PatchApiV1AdminKeysIdResponse) Status() string {
+func (r GetHooksNameHealthResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3692,7 +8281,7 @@ func (r PatchApiV1AdminKeysIdResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PatchApiV1AdminKeysIdResponse) StatusCode() int {
+func (r GetHooksNameHealthResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3700,25 +8289,60 @@ func (r PatchApiV1AdminKeysIdResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PatchApiV1AdminKeysIdResponse) ContentType() string {
+func (r GetHooksNameHealthResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type PostApiV1AdminKeysIdRotateResponse struct {
+type GetHooksNameSchemaResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookSchemaView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetHooksNameSchemaResponse) GetJSON200() *HookSchemaView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetHooksNameSchemaResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetHooksNameSchemaResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetHooksNameSchemaResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetHooksNameSchemaResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r PostApiV1AdminKeysIdRotateResponse) GetBody() []byte {
+func (r GetHooksNameSchemaResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r PostApiV1AdminKeysIdRotateResponse) Status() string {
+func (r GetHooksNameSchemaResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3726,7 +8350,7 @@ func (r PostApiV1AdminKeysIdRotateResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r PostApiV1AdminKeysIdRotateResponse) StatusCode() int {
+func (r GetHooksNameSchemaResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3734,25 +8358,81 @@ func (r PostApiV1AdminKeysIdRotateResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostApiV1AdminKeysIdRotateResponse) ContentType() string {
+func (r GetHooksNameSchemaResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminKeysIdUsageResponse struct {
+type PatchHooksNameSettingsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON200() *HookView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PatchHooksNameSettingsResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminKeysIdUsageResponse) GetBody() []byte {
+func (r PatchHooksNameSettingsResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminKeysIdUsageResponse) Status() string {
+func (r PatchHooksNameSettingsResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3760,7 +8440,7 @@ func (r GetApiV1AdminKeysIdUsageResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminKeysIdUsageResponse) StatusCode() int {
+func (r PatchHooksNameSettingsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3768,25 +8448,60 @@ func (r GetApiV1AdminKeysIdUsageResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminKeysIdUsageResponse) ContentType() string {
+func (r PatchHooksNameSettingsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminModelsResponse struct {
+type GetHooksNameStatusResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HookStatusView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetHooksNameStatusResponse) GetJSON200() *HookStatusView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetHooksNameStatusResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetHooksNameStatusResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetHooksNameStatusResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetHooksNameStatusResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminModelsResponse) GetBody() []byte {
+func (r GetHooksNameStatusResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminModelsResponse) Status() string {
+func (r GetHooksNameStatusResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3794,7 +8509,7 @@ func (r GetApiV1AdminModelsResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminModelsResponse) StatusCode() int {
+func (r GetHooksNameStatusResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3802,25 +8517,53 @@ func (r GetApiV1AdminModelsResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminModelsResponse) ContentType() string {
+func (r GetHooksNameStatusResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminOpenapiJsonResponse struct {
+type GetInfoResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *InfoView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetInfoResponse) GetJSON200() *InfoView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetInfoResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetInfoResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetInfoResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminOpenapiJsonResponse) GetBody() []byte {
+func (r GetInfoResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminOpenapiJsonResponse) Status() string {
+func (r GetInfoResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3828,7 +8571,7 @@ func (r GetApiV1AdminOpenapiJsonResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminOpenapiJsonResponse) StatusCode() int {
+func (r GetInfoResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3836,25 +8579,60 @@ func (r GetApiV1AdminOpenapiJsonResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminOpenapiJsonResponse) ContentType() string {
+func (r GetInfoResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminPluginsResponse struct {
+type GetKeysResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *KeyPageView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetKeysResponse) GetJSON200() *KeyPageView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetKeysResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetKeysResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetKeysResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetKeysResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminPluginsResponse) GetBody() []byte {
+func (r GetKeysResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminPluginsResponse) Status() string {
+func (r GetKeysResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3862,7 +8640,7 @@ func (r GetApiV1AdminPluginsResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminPluginsResponse) StatusCode() int {
+func (r GetKeysResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3870,25 +8648,74 @@ func (r GetApiV1AdminPluginsResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminPluginsResponse) ContentType() string {
+func (r GetKeysResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminPoolsResponse struct {
+type PostKeysResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *CreatedKeyView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r PostKeysResponse) GetJSON201() *CreatedKeyView {
+	return r.JSON201
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostKeysResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostKeysResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostKeysResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostKeysResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostKeysResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostKeysResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminPoolsResponse) GetBody() []byte {
+func (r PostKeysResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminPoolsResponse) Status() string {
+func (r PostKeysResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3896,7 +8723,7 @@ func (r GetApiV1AdminPoolsResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminPoolsResponse) StatusCode() int {
+func (r PostKeysResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3904,25 +8731,74 @@ func (r GetApiV1AdminPoolsResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminPoolsResponse) ContentType() string {
+func (r PostKeysResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminPoolsNameResponse struct {
+type DeleteKeysIdResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteKeysIdResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminPoolsNameResponse) GetBody() []byte {
+func (r DeleteKeysIdResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminPoolsNameResponse) Status() string {
+func (r DeleteKeysIdResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3930,7 +8806,7 @@ func (r GetApiV1AdminPoolsNameResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminPoolsNameResponse) StatusCode() int {
+func (r DeleteKeysIdResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3938,25 +8814,67 @@ func (r GetApiV1AdminPoolsNameResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminPoolsNameResponse) ContentType() string {
+func (r DeleteKeysIdResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminProvidersResponse struct {
+type GetKeysIdResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *KeyView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetKeysIdResponse) GetJSON200() *KeyView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetKeysIdResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetKeysIdResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetKeysIdResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetKeysIdResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetKeysIdResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminProvidersResponse) GetBody() []byte {
+func (r GetKeysIdResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminProvidersResponse) Status() string {
+func (r GetKeysIdResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3964,7 +8882,7 @@ func (r GetApiV1AdminProvidersResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminProvidersResponse) StatusCode() int {
+func (r GetKeysIdResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -3972,25 +8890,81 @@ func (r GetApiV1AdminProvidersResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminProvidersResponse) ContentType() string {
+func (r GetKeysIdResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-type GetApiV1AdminUsageResponse struct {
+type PatchKeysIdResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *KeyView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PatchKeysIdResponse) GetJSON200() *KeyView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PatchKeysIdResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PatchKeysIdResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PatchKeysIdResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PatchKeysIdResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PatchKeysIdResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PatchKeysIdResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PatchKeysIdResponse) GetJSON500() *Error {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
-func (r GetApiV1AdminUsageResponse) GetBody() []byte {
+func (r PatchKeysIdResponse) GetBody() []byte {
 	return r.Body
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1AdminUsageResponse) Status() string {
+func (r PatchKeysIdResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -3998,7 +8972,7 @@ func (r GetApiV1AdminUsageResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1AdminUsageResponse) StatusCode() int {
+func (r PatchKeysIdResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4006,1081 +8980,5637 @@ func (r GetApiV1AdminUsageResponse) StatusCode() int {
 }
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r GetApiV1AdminUsageResponse) ContentType() string {
+func (r PatchKeysIdResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
 	return ""
 }
 
-// GetApiV1AdminAdminAuthWithResponse Admin-plane auth config (the admin surface guard)
+type PostKeysIdRevokeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *RevokeView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON200() *RevokeView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostKeysIdRevokeResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostKeysIdRevokeResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostKeysIdRevokeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostKeysIdRevokeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostKeysIdRevokeResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostKeysIdRotateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *RotatedKeyView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON200() *RotatedKeyView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostKeysIdRotateResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostKeysIdRotateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostKeysIdRotateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostKeysIdRotateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostKeysIdRotateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetKeysIdUsageResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *KeyMeteringView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetKeysIdUsageResponse) GetJSON200() *KeyMeteringView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetKeysIdUsageResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetKeysIdUsageResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetKeysIdUsageResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetKeysIdUsageResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetKeysIdUsageResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetKeysIdUsageResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetKeysIdUsageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetKeysIdUsageResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetKeysIdUsageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetModelsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PageModelView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetModelsResponse) GetJSON200() *PageModelView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetModelsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetModelsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetModelsResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetModelsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetModelsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetModelsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetModelsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetOpenapiJsonResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *map[string]interface{}
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetOpenapiJsonResponse) GetJSON200() *map[string]interface{} {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetOpenapiJsonResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetOpenapiJsonResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetOpenapiJsonResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetOpenapiJsonResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetOpenapiJsonResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetOpenapiJsonResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetOpenapiJsonResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteOverlaySectionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *OverlayResetView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON200() *OverlayResetView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteOverlaySectionResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteOverlaySectionResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteOverlaySectionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteOverlaySectionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteOverlaySectionResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPluginsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PagePluginView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPluginsResponse) GetJSON200() *PagePluginView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetPluginsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetPluginsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetPluginsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPluginsResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPluginsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPluginsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPluginsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPluginsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostPluginsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *PluginInstallView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r PostPluginsResponse) GetJSON201() *PluginInstallView {
+	return r.JSON201
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostPluginsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostPluginsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostPluginsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostPluginsResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostPluginsResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostPluginsResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostPluginsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostPluginsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostPluginsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostPluginsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostPluginsReloadResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PluginReloadView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostPluginsReloadResponse) GetJSON200() *PluginReloadView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostPluginsReloadResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostPluginsReloadResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostPluginsReloadResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostPluginsReloadResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostPluginsReloadResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostPluginsReloadResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostPluginsReloadResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostPluginsReloadResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostPluginsReloadResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostPluginsRollbackResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PluginRollbackView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON200() *PluginRollbackView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostPluginsRollbackResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostPluginsRollbackResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostPluginsRollbackResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostPluginsRollbackResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostPluginsRollbackResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeletePluginsFileResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeletePluginsFileResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeletePluginsFileResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeletePluginsFileResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeletePluginsFileResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeletePluginsFileResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeletePluginsFileResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeletePluginsFileResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeletePluginsFileResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeletePluginsFileResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeletePluginsFileResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPluginsFileSchemaResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PluginSchemaView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPluginsFileSchemaResponse) GetJSON200() *PluginSchemaView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetPluginsFileSchemaResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetPluginsFileSchemaResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetPluginsFileSchemaResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPluginsFileSchemaResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPluginsFileSchemaResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPluginsFileSchemaResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPluginsFileSchemaResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPluginsFileSchemaResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPoolsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PagePoolView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPoolsResponse) GetJSON200() *PagePoolView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetPoolsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetPoolsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetPoolsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPoolsResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPoolsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPoolsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPoolsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPoolsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPoolsNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PoolDetailView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPoolsNameResponse) GetJSON200() *PoolDetailView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetPoolsNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetPoolsNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetPoolsNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPoolsNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPoolsNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPoolsNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPoolsNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPoolsNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetProvidersResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PageProviderView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetProvidersResponse) GetJSON200() *PageProviderView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetProvidersResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetProvidersResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetProvidersResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetProvidersResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetProvidersResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetProvidersResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetProvidersResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostRestartResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *RestartView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r PostRestartResponse) GetJSON202() *RestartView {
+	return r.JSON202
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostRestartResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostRestartResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostRestartResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostRestartResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostRestartResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostRestartResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostRestartResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostRestartResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostRestartResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostRestartResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostSigningKeyRotateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SigningKeyRotateView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostSigningKeyRotateResponse) GetJSON200() *SigningKeyRotateView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostSigningKeyRotateResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostSigningKeyRotateResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostSigningKeyRotateResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostSigningKeyRotateResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostSigningKeyRotateResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostSigningKeyRotateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostSigningKeyRotateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostSigningKeyRotateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostSigningKeyRotateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetUsageResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *UsageView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetUsageResponse) GetJSON200() *UsageView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetUsageResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetUsageResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetUsageResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetUsageResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetUsageResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetUsageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetUsageResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetUsageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+// GetAdminAuthWithResponse Admin-plane auth config (the admin surface guard)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/admin-auth (the `GetApiV1AdminAdminAuth` operationId).
-func (c *ClientWithResponses) GetApiV1AdminAdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminAdminAuthResponse, error) {
-	rsp, err := c.GetApiV1AdminAdminAuth(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/admin-auth (the `GetAdminAuth` operationId).
+func (c *ClientWithResponses) GetAdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAdminAuthResponse, error) {
+	rsp, err := c.GetAdminAuth(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminAdminAuthResponse(rsp)
+	return ParseGetAdminAuthResponse(rsp)
 }
 
-// PutApiV1AdminAdminAuthWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+// PutAdminAuthWithBodyWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+func (c *ClientWithResponses) PutAdminAuthWithBodyWithResponse(ctx context.Context, params *PutAdminAuthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutAdminAuthResponse, error) {
+	rsp, err := c.PutAdminAuthWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutAdminAuthResponse(rsp)
+}
+
+// PutAdminAuthWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
+func (c *ClientWithResponses) PutAdminAuthWithResponse(ctx context.Context, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody, reqEditors ...RequestEditorFn) (*PutAdminAuthResponse, error) {
+	rsp, err := c.PutAdminAuth(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutAdminAuthResponse(rsp)
+}
+
+// GetAuditWithResponse Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with PUT /api/v1/admin/admin-auth (the `PutApiV1AdminAdminAuth` operationId).
-func (c *ClientWithResponses) PutApiV1AdminAdminAuthWithResponse(ctx context.Context, params *PutApiV1AdminAdminAuthParams, reqEditors ...RequestEditorFn) (*PutApiV1AdminAdminAuthResponse, error) {
-	rsp, err := c.PutApiV1AdminAdminAuth(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/audit (the `GetAudit` operationId).
+func (c *ClientWithResponses) GetAuditWithResponse(ctx context.Context, params *GetAuditParams, reqEditors ...RequestEditorFn) (*GetAuditResponse, error) {
+	rsp, err := c.GetAudit(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePutApiV1AdminAdminAuthResponse(rsp)
+	return ParseGetAuditResponse(rsp)
 }
 
-// GetApiV1AdminAuditWithResponse Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+// GetAuthWithResponse Ingress auth chain + upstream-credential mode
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/audit (the `GetApiV1AdminAudit` operationId).
-func (c *ClientWithResponses) GetApiV1AdminAuditWithResponse(ctx context.Context, params *GetApiV1AdminAuditParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminAuditResponse, error) {
-	rsp, err := c.GetApiV1AdminAudit(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/auth (the `GetAuth` operationId).
+func (c *ClientWithResponses) GetAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAuthResponse, error) {
+	rsp, err := c.GetAuth(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminAuditResponse(rsp)
+	return ParseGetAuthResponse(rsp)
 }
 
-// GetApiV1AdminAuthWithResponse Ingress auth chain + upstream-credential mode
+// PostAuthCacheFlushWithBodyWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+func (c *ClientWithResponses) PostAuthCacheFlushWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostAuthCacheFlushResponse, error) {
+	rsp, err := c.PostAuthCacheFlushWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostAuthCacheFlushResponse(rsp)
+}
+
+// PostAuthCacheFlushWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
+func (c *ClientWithResponses) PostAuthCacheFlushWithResponse(ctx context.Context, body PostAuthCacheFlushJSONRequestBody, reqEditors ...RequestEditorFn) (*PostAuthCacheFlushResponse, error) {
+	rsp, err := c.PostAuthCacheFlush(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostAuthCacheFlushResponse(rsp)
+}
+
+// GetConfigWithResponse Effective running config snapshot (redacted)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/auth (the `GetApiV1AdminAuth` operationId).
-func (c *ClientWithResponses) GetApiV1AdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminAuthResponse, error) {
-	rsp, err := c.GetApiV1AdminAuth(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/config (the `GetConfig` operationId).
+func (c *ClientWithResponses) GetConfigWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetConfigResponse, error) {
+	rsp, err := c.GetConfig(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminAuthResponse(rsp)
+	return ParseGetConfigResponse(rsp)
 }
 
-// PostApiV1AdminAuthCacheFlushWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+// PostConfigApplyWithBodyWithResponse Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+func (c *ClientWithResponses) PostConfigApplyWithBodyWithResponse(ctx context.Context, params *PostConfigApplyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostConfigApplyResponse, error) {
+	rsp, err := c.PostConfigApplyWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostConfigApplyResponse(rsp)
+}
+
+// PostConfigApplyWithResponse Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/config/apply (the `PostConfigApply` operationId).
+func (c *ClientWithResponses) PostConfigApplyWithResponse(ctx context.Context, params *PostConfigApplyParams, body PostConfigApplyJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigApplyResponse, error) {
+	rsp, err := c.PostConfigApply(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostConfigApplyResponse(rsp)
+}
+
+// GetConfigDiffWithResponse Structured hook-surface diff between two retained versions
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostApiV1AdminAuthCacheFlush` operationId).
-func (c *ClientWithResponses) PostApiV1AdminAuthCacheFlushWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminAuthCacheFlushResponse, error) {
-	rsp, err := c.PostApiV1AdminAuthCacheFlush(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/config/diff (the `GetConfigDiff` operationId).
+func (c *ClientWithResponses) GetConfigDiffWithResponse(ctx context.Context, params *GetConfigDiffParams, reqEditors ...RequestEditorFn) (*GetConfigDiffResponse, error) {
+	rsp, err := c.GetConfigDiff(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminAuthCacheFlushResponse(rsp)
+	return ParseGetConfigDiffResponse(rsp)
 }
 
-// GetApiV1AdminConfigWithResponse Effective running config snapshot (redacted)
+// PostConfigReloadWithResponse Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/config (the `GetApiV1AdminConfig` operationId).
-func (c *ClientWithResponses) GetApiV1AdminConfigWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigResponse, error) {
-	rsp, err := c.GetApiV1AdminConfig(ctx, reqEditors...)
+// Corresponds with POST /api/v1/admin/config/reload (the `PostConfigReload` operationId).
+func (c *ClientWithResponses) PostConfigReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostConfigReloadResponse, error) {
+	rsp, err := c.PostConfigReload(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminConfigResponse(rsp)
+	return ParsePostConfigReloadResponse(rsp)
 }
 
-// PostApiV1AdminConfigApplyWithResponse Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)
+// PostConfigRollbackWithBodyWithResponse Restore a retained version's hook surface (re-validated; a NEW version)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+func (c *ClientWithResponses) PostConfigRollbackWithBodyWithResponse(ctx context.Context, params *PostConfigRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostConfigRollbackResponse, error) {
+	rsp, err := c.PostConfigRollbackWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostConfigRollbackResponse(rsp)
+}
+
+// PostConfigRollbackWithResponse Restore a retained version's hook surface (re-validated; a NEW version)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
+func (c *ClientWithResponses) PostConfigRollbackWithResponse(ctx context.Context, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigRollbackResponse, error) {
+	rsp, err := c.PostConfigRollback(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostConfigRollbackResponse(rsp)
+}
+
+// GetConfigSettingsWithResponse Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/config/apply (the `PostApiV1AdminConfigApply` operationId).
-func (c *ClientWithResponses) PostApiV1AdminConfigApplyWithResponse(ctx context.Context, params *PostApiV1AdminConfigApplyParams, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigApplyResponse, error) {
-	rsp, err := c.PostApiV1AdminConfigApply(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
+func (c *ClientWithResponses) GetConfigSettingsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetConfigSettingsResponse, error) {
+	rsp, err := c.GetConfigSettings(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminConfigApplyResponse(rsp)
+	return ParseGetConfigSettingsResponse(rsp)
 }
 
-// GetApiV1AdminConfigDiffWithResponse Structured hook-surface diff between two retained versions
+// PutConfigSettingsWithBodyWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+func (c *ClientWithResponses) PutConfigSettingsWithBodyWithResponse(ctx context.Context, params *PutConfigSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutConfigSettingsResponse, error) {
+	rsp, err := c.PutConfigSettingsWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutConfigSettingsResponse(rsp)
+}
+
+// PutConfigSettingsWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
+func (c *ClientWithResponses) PutConfigSettingsWithResponse(ctx context.Context, params *PutConfigSettingsParams, body PutConfigSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PutConfigSettingsResponse, error) {
+	rsp, err := c.PutConfigSettings(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutConfigSettingsResponse(rsp)
+}
+
+// PostConfigValidateWithBodyWithResponse Dry-run validate a proposed config
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+func (c *ClientWithResponses) PostConfigValidateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostConfigValidateResponse, error) {
+	rsp, err := c.PostConfigValidateWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostConfigValidateResponse(rsp)
+}
+
+// PostConfigValidateWithResponse Dry-run validate a proposed config
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/config/validate (the `PostConfigValidate` operationId).
+func (c *ClientWithResponses) PostConfigValidateWithResponse(ctx context.Context, body PostConfigValidateJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigValidateResponse, error) {
+	rsp, err := c.PostConfigValidate(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostConfigValidateResponse(rsp)
+}
+
+// GetConfigVersionsWithResponse Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/config/diff (the `GetApiV1AdminConfigDiff` operationId).
-func (c *ClientWithResponses) GetApiV1AdminConfigDiffWithResponse(ctx context.Context, params *GetApiV1AdminConfigDiffParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigDiffResponse, error) {
-	rsp, err := c.GetApiV1AdminConfigDiff(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/config/versions (the `GetConfigVersions` operationId).
+func (c *ClientWithResponses) GetConfigVersionsWithResponse(ctx context.Context, params *GetConfigVersionsParams, reqEditors ...RequestEditorFn) (*GetConfigVersionsResponse, error) {
+	rsp, err := c.GetConfigVersions(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminConfigDiffResponse(rsp)
+	return ParseGetConfigVersionsResponse(rsp)
 }
 
-// PostApiV1AdminConfigReloadWithResponse Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)
+// GetConfigVersionsVWithResponse One retained config version, with its hook-surface snapshot
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/config/reload (the `PostApiV1AdminConfigReload` operationId).
-func (c *ClientWithResponses) PostApiV1AdminConfigReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigReloadResponse, error) {
-	rsp, err := c.PostApiV1AdminConfigReload(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetConfigVersionsV` operationId).
+func (c *ClientWithResponses) GetConfigVersionsVWithResponse(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*GetConfigVersionsVResponse, error) {
+	rsp, err := c.GetConfigVersionsV(ctx, v, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminConfigReloadResponse(rsp)
+	return ParseGetConfigVersionsVResponse(rsp)
 }
 
-// PostApiV1AdminConfigRollbackWithResponse Restore a retained version's hook surface (re-validated; a NEW version)
+// GetGroupsWithResponse Group registry — the limit tree (parent chain, limits, child_default budget template)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/config/rollback (the `PostApiV1AdminConfigRollback` operationId).
-func (c *ClientWithResponses) PostApiV1AdminConfigRollbackWithResponse(ctx context.Context, params *PostApiV1AdminConfigRollbackParams, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigRollbackResponse, error) {
-	rsp, err := c.PostApiV1AdminConfigRollback(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
+func (c *ClientWithResponses) GetGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGroupsResponse, error) {
+	rsp, err := c.GetGroups(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminConfigRollbackResponse(rsp)
+	return ParseGetGroupsResponse(rsp)
 }
 
-// PostApiV1AdminConfigValidateWithResponse Dry-run validate a proposed config
+// PostGroupsWithBodyWithResponse Create (or replace) a group at runtime — live immediately (upsert)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+func (c *ClientWithResponses) PostGroupsWithBodyWithResponse(ctx context.Context, params *PostGroupsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostGroupsResponse, error) {
+	rsp, err := c.PostGroupsWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostGroupsResponse(rsp)
+}
+
+// PostGroupsWithResponse Create (or replace) a group at runtime — live immediately (upsert)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
+func (c *ClientWithResponses) PostGroupsWithResponse(ctx context.Context, params *PostGroupsParams, body PostGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostGroupsResponse, error) {
+	rsp, err := c.PostGroups(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostGroupsResponse(rsp)
+}
+
+// DeleteGroupsNameWithResponse Remove an overlay group at runtime — live immediately
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/config/validate (the `PostApiV1AdminConfigValidate` operationId).
-func (c *ClientWithResponses) PostApiV1AdminConfigValidateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminConfigValidateResponse, error) {
-	rsp, err := c.PostApiV1AdminConfigValidate(ctx, reqEditors...)
+// Corresponds with DELETE /api/v1/admin/groups/{name} (the `DeleteGroupsName` operationId).
+func (c *ClientWithResponses) DeleteGroupsNameWithResponse(ctx context.Context, name string, params *DeleteGroupsNameParams, reqEditors ...RequestEditorFn) (*DeleteGroupsNameResponse, error) {
+	rsp, err := c.DeleteGroupsName(ctx, name, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminConfigValidateResponse(rsp)
+	return ParseDeleteGroupsNameResponse(rsp)
 }
 
-// GetApiV1AdminConfigVersionsWithResponse Config version history (newest first; id/ts/principal/summary). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+// GetGroupsNameWithResponse One group definition (parent, enabled, limits, child_default)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/config/versions (the `GetApiV1AdminConfigVersions` operationId).
-func (c *ClientWithResponses) GetApiV1AdminConfigVersionsWithResponse(ctx context.Context, params *GetApiV1AdminConfigVersionsParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigVersionsResponse, error) {
-	rsp, err := c.GetApiV1AdminConfigVersions(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/groups/{name} (the `GetGroupsName` operationId).
+func (c *ClientWithResponses) GetGroupsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetGroupsNameResponse, error) {
+	rsp, err := c.GetGroupsName(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminConfigVersionsResponse(rsp)
+	return ParseGetGroupsNameResponse(rsp)
 }
 
-// GetApiV1AdminConfigVersionsVWithResponse One retained config version, with its hook-surface snapshot
+// PatchGroupsNameWithBodyWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+func (c *ClientWithResponses) PatchGroupsNameWithBodyWithResponse(ctx context.Context, name string, params *PatchGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchGroupsNameResponse, error) {
+	rsp, err := c.PatchGroupsNameWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchGroupsNameResponse(rsp)
+}
+
+// PatchGroupsNameWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
+func (c *ClientWithResponses) PatchGroupsNameWithResponse(ctx context.Context, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchGroupsNameResponse, error) {
+	rsp, err := c.PatchGroupsName(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchGroupsNameResponse(rsp)
+}
+
+// PutGroupsNameWithBodyWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+func (c *ClientWithResponses) PutGroupsNameWithBodyWithResponse(ctx context.Context, name string, params *PutGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutGroupsNameResponse, error) {
+	rsp, err := c.PutGroupsNameWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutGroupsNameResponse(rsp)
+}
+
+// PutGroupsNameWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
+func (c *ClientWithResponses) PutGroupsNameWithResponse(ctx context.Context, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutGroupsNameResponse, error) {
+	rsp, err := c.PutGroupsName(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutGroupsNameResponse(rsp)
+}
+
+// GetGroupsNameUsageWithResponse The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetApiV1AdminConfigVersionsV` operationId).
-func (c *ClientWithResponses) GetApiV1AdminConfigVersionsVWithResponse(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*GetApiV1AdminConfigVersionsVResponse, error) {
-	rsp, err := c.GetApiV1AdminConfigVersionsV(ctx, v, reqEditors...)
+// Corresponds with GET /api/v1/admin/groups/{name}/usage (the `GetGroupsNameUsage` operationId).
+func (c *ClientWithResponses) GetGroupsNameUsageWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetGroupsNameUsageResponse, error) {
+	rsp, err := c.GetGroupsNameUsage(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminConfigVersionsVResponse(rsp)
+	return ParseGetGroupsNameUsageResponse(rsp)
 }
 
-// GetApiV1AdminHooksWithResponse Hook registry (definitions)
+// GetHooksWithResponse Hook registry (definitions)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/hooks (the `GetApiV1AdminHooks` operationId).
-func (c *ClientWithResponses) GetApiV1AdminHooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksResponse, error) {
-	rsp, err := c.GetApiV1AdminHooks(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/hooks (the `GetHooks` operationId).
+func (c *ClientWithResponses) GetHooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHooksResponse, error) {
+	rsp, err := c.GetHooks(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminHooksResponse(rsp)
+	return ParseGetHooksResponse(rsp)
 }
 
-// PostApiV1AdminHooksWithResponse Register (or replace) a hook at runtime — live immediately
+// PostHooksWithBodyWithResponse Register (or replace) a hook at runtime — live immediately
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+func (c *ClientWithResponses) PostHooksWithBodyWithResponse(ctx context.Context, params *PostHooksParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostHooksResponse, error) {
+	rsp, err := c.PostHooksWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostHooksResponse(rsp)
+}
+
+// PostHooksWithResponse Register (or replace) a hook at runtime — live immediately
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
+func (c *ClientWithResponses) PostHooksWithResponse(ctx context.Context, params *PostHooksParams, body PostHooksJSONRequestBody, reqEditors ...RequestEditorFn) (*PostHooksResponse, error) {
+	rsp, err := c.PostHooks(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostHooksResponse(rsp)
+}
+
+// DeleteHooksNameWithResponse Remove a hook at runtime — live immediately
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/hooks (the `PostApiV1AdminHooks` operationId).
-func (c *ClientWithResponses) PostApiV1AdminHooksWithResponse(ctx context.Context, params *PostApiV1AdminHooksParams, reqEditors ...RequestEditorFn) (*PostApiV1AdminHooksResponse, error) {
-	rsp, err := c.PostApiV1AdminHooks(ctx, params, reqEditors...)
+// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteHooksName` operationId).
+func (c *ClientWithResponses) DeleteHooksNameWithResponse(ctx context.Context, name string, params *DeleteHooksNameParams, reqEditors ...RequestEditorFn) (*DeleteHooksNameResponse, error) {
+	rsp, err := c.DeleteHooksName(ctx, name, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminHooksResponse(rsp)
+	return ParseDeleteHooksNameResponse(rsp)
 }
 
-// DeleteApiV1AdminHooksNameWithResponse Remove a hook at runtime — live immediately
+// GetHooksNameWithResponse One hook definition
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteApiV1AdminHooksName` operationId).
-func (c *ClientWithResponses) DeleteApiV1AdminHooksNameWithResponse(ctx context.Context, name string, params *DeleteApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*DeleteApiV1AdminHooksNameResponse, error) {
-	rsp, err := c.DeleteApiV1AdminHooksName(ctx, name, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetHooksName` operationId).
+func (c *ClientWithResponses) GetHooksNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameResponse, error) {
+	rsp, err := c.GetHooksName(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseDeleteApiV1AdminHooksNameResponse(rsp)
+	return ParseGetHooksNameResponse(rsp)
 }
 
-// GetApiV1AdminHooksNameWithResponse One hook definition
+// PutHooksNameWithBodyWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+func (c *ClientWithResponses) PutHooksNameWithBodyWithResponse(ctx context.Context, name string, params *PutHooksNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutHooksNameResponse, error) {
+	rsp, err := c.PutHooksNameWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutHooksNameResponse(rsp)
+}
+
+// PutHooksNameWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
+func (c *ClientWithResponses) PutHooksNameWithResponse(ctx context.Context, name string, params *PutHooksNameParams, body PutHooksNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutHooksNameResponse, error) {
+	rsp, err := c.PutHooksName(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutHooksNameResponse(rsp)
+}
+
+// GetHooksNameHealthWithResponse Best-effort hook transport reachability
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetApiV1AdminHooksName` operationId).
-func (c *ClientWithResponses) GetApiV1AdminHooksNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameResponse, error) {
-	rsp, err := c.GetApiV1AdminHooksName(ctx, name, reqEditors...)
+// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetHooksNameHealth` operationId).
+func (c *ClientWithResponses) GetHooksNameHealthWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameHealthResponse, error) {
+	rsp, err := c.GetHooksNameHealth(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminHooksNameResponse(rsp)
+	return ParseGetHooksNameHealthResponse(rsp)
 }
 
-// PutApiV1AdminHooksNameWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+// GetHooksNameSchemaWithResponse The hook's self-described settings JSON Schema (describe proxy)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutApiV1AdminHooksName` operationId).
-func (c *ClientWithResponses) PutApiV1AdminHooksNameWithResponse(ctx context.Context, name string, params *PutApiV1AdminHooksNameParams, reqEditors ...RequestEditorFn) (*PutApiV1AdminHooksNameResponse, error) {
-	rsp, err := c.PutApiV1AdminHooksName(ctx, name, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetHooksNameSchema` operationId).
+func (c *ClientWithResponses) GetHooksNameSchemaWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameSchemaResponse, error) {
+	rsp, err := c.GetHooksNameSchema(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePutApiV1AdminHooksNameResponse(rsp)
+	return ParseGetHooksNameSchemaResponse(rsp)
 }
 
-// GetApiV1AdminHooksNameHealthWithResponse Best-effort hook transport reachability
+// PatchHooksNameSettingsWithBodyWithResponse Push an opaque settings map to the running hook; COMMIT ON ACK
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+func (c *ClientWithResponses) PatchHooksNameSettingsWithBodyWithResponse(ctx context.Context, name string, params *PatchHooksNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchHooksNameSettingsResponse, error) {
+	rsp, err := c.PatchHooksNameSettingsWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchHooksNameSettingsResponse(rsp)
+}
+
+// PatchHooksNameSettingsWithResponse Push an opaque settings map to the running hook; COMMIT ON ACK
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchHooksNameSettings` operationId).
+func (c *ClientWithResponses) PatchHooksNameSettingsWithResponse(ctx context.Context, name string, params *PatchHooksNameSettingsParams, body PatchHooksNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchHooksNameSettingsResponse, error) {
+	rsp, err := c.PatchHooksNameSettings(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchHooksNameSettingsResponse(rsp)
+}
+
+// GetHooksNameStatusWithResponse The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/hooks/{name}/health (the `GetApiV1AdminHooksNameHealth` operationId).
-func (c *ClientWithResponses) GetApiV1AdminHooksNameHealthWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameHealthResponse, error) {
-	rsp, err := c.GetApiV1AdminHooksNameHealth(ctx, name, reqEditors...)
+// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetHooksNameStatus` operationId).
+func (c *ClientWithResponses) GetHooksNameStatusWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameStatusResponse, error) {
+	rsp, err := c.GetHooksNameStatus(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminHooksNameHealthResponse(rsp)
+	return ParseGetHooksNameStatusResponse(rsp)
 }
 
-// GetApiV1AdminHooksNameSchemaWithResponse The hook's self-described settings JSON Schema (describe proxy)
+// GetInfoWithResponse Version, compiled-in plugin proof, uptime, topology
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/hooks/{name}/schema (the `GetApiV1AdminHooksNameSchema` operationId).
-func (c *ClientWithResponses) GetApiV1AdminHooksNameSchemaWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameSchemaResponse, error) {
-	rsp, err := c.GetApiV1AdminHooksNameSchema(ctx, name, reqEditors...)
+// Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
+func (c *ClientWithResponses) GetInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetInfoResponse, error) {
+	rsp, err := c.GetInfo(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminHooksNameSchemaResponse(rsp)
+	return ParseGetInfoResponse(rsp)
 }
 
-// PatchApiV1AdminHooksNameSettingsWithResponse Push an opaque settings map to the running hook; COMMIT ON ACK
+// GetKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with PATCH /api/v1/admin/hooks/{name}/settings (the `PatchApiV1AdminHooksNameSettings` operationId).
-func (c *ClientWithResponses) PatchApiV1AdminHooksNameSettingsWithResponse(ctx context.Context, name string, params *PatchApiV1AdminHooksNameSettingsParams, reqEditors ...RequestEditorFn) (*PatchApiV1AdminHooksNameSettingsResponse, error) {
-	rsp, err := c.PatchApiV1AdminHooksNameSettings(ctx, name, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/keys (the `GetKeys` operationId).
+func (c *ClientWithResponses) GetKeysWithResponse(ctx context.Context, params *GetKeysParams, reqEditors ...RequestEditorFn) (*GetKeysResponse, error) {
+	rsp, err := c.GetKeys(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePatchApiV1AdminHooksNameSettingsResponse(rsp)
+	return ParseGetKeysResponse(rsp)
 }
 
-// GetApiV1AdminHooksNameStatusWithResponse The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)
+// PostKeysWithBodyWithResponse Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+func (c *ClientWithResponses) PostKeysWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostKeysResponse, error) {
+	rsp, err := c.PostKeysWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostKeysResponse(rsp)
+}
+
+// PostKeysWithResponse Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
+func (c *ClientWithResponses) PostKeysWithResponse(ctx context.Context, body PostKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*PostKeysResponse, error) {
+	rsp, err := c.PostKeys(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostKeysResponse(rsp)
+}
+
+// DeleteKeysIdWithResponse Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetApiV1AdminHooksNameStatus` operationId).
-func (c *ClientWithResponses) GetApiV1AdminHooksNameStatusWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminHooksNameStatusResponse, error) {
-	rsp, err := c.GetApiV1AdminHooksNameStatus(ctx, name, reqEditors...)
+// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteKeysId` operationId).
+func (c *ClientWithResponses) DeleteKeysIdWithResponse(ctx context.Context, id string, params *DeleteKeysIdParams, reqEditors ...RequestEditorFn) (*DeleteKeysIdResponse, error) {
+	rsp, err := c.DeleteKeysId(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminHooksNameStatusResponse(rsp)
+	return ParseDeleteKeysIdResponse(rsp)
 }
 
-// GetApiV1AdminInfoWithResponse Version, compiled-in plugin proof, uptime, topology
+// GetKeysIdWithResponse One key's metadata + `ETag` (never the secret/hash)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/info (the `GetApiV1AdminInfo` operationId).
-func (c *ClientWithResponses) GetApiV1AdminInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminInfoResponse, error) {
-	rsp, err := c.GetApiV1AdminInfo(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/keys/{id} (the `GetKeysId` operationId).
+func (c *ClientWithResponses) GetKeysIdWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetKeysIdResponse, error) {
+	rsp, err := c.GetKeysId(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminInfoResponse(rsp)
+	return ParseGetKeysIdResponse(rsp)
 }
 
-// GetApiV1AdminKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)
+// PatchKeysIdWithBodyWithResponse Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+func (c *ClientWithResponses) PatchKeysIdWithBodyWithResponse(ctx context.Context, id string, params *PatchKeysIdParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchKeysIdResponse, error) {
+	rsp, err := c.PatchKeysIdWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchKeysIdResponse(rsp)
+}
+
+// PatchKeysIdWithResponse Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
+func (c *ClientWithResponses) PatchKeysIdWithResponse(ctx context.Context, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchKeysIdResponse, error) {
+	rsp, err := c.PatchKeysId(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchKeysIdResponse(rsp)
+}
+
+// PostKeysIdRevokeWithResponse REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/keys (the `GetApiV1AdminKeys` operationId).
-func (c *ClientWithResponses) GetApiV1AdminKeysWithResponse(ctx context.Context, params *GetApiV1AdminKeysParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminKeysResponse, error) {
-	rsp, err := c.GetApiV1AdminKeys(ctx, params, reqEditors...)
+// Corresponds with POST /api/v1/admin/keys/{id}/revoke (the `PostKeysIdRevoke` operationId).
+func (c *ClientWithResponses) PostKeysIdRevokeWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*PostKeysIdRevokeResponse, error) {
+	rsp, err := c.PostKeysIdRevoke(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminKeysResponse(rsp)
+	return ParsePostKeysIdRevokeResponse(rsp)
 }
 
-// PostApiV1AdminKeysWithResponse Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)
+// PostKeysIdRotateWithResponse Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/keys (the `PostApiV1AdminKeys` operationId).
-func (c *ClientWithResponses) PostApiV1AdminKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostApiV1AdminKeysResponse, error) {
-	rsp, err := c.PostApiV1AdminKeys(ctx, reqEditors...)
+// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostKeysIdRotate` operationId).
+func (c *ClientWithResponses) PostKeysIdRotateWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*PostKeysIdRotateResponse, error) {
+	rsp, err := c.PostKeysIdRotate(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminKeysResponse(rsp)
+	return ParsePostKeysIdRotateResponse(rsp)
 }
 
-// DeleteApiV1AdminKeysIdWithResponse Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+// GetKeysIdUsageWithResponse Current-window usage for one key (spend / tokens / requests)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteApiV1AdminKeysId` operationId).
-func (c *ClientWithResponses) DeleteApiV1AdminKeysIdWithResponse(ctx context.Context, id string, params *DeleteApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*DeleteApiV1AdminKeysIdResponse, error) {
-	rsp, err := c.DeleteApiV1AdminKeysId(ctx, id, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetKeysIdUsage` operationId).
+func (c *ClientWithResponses) GetKeysIdUsageWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetKeysIdUsageResponse, error) {
+	rsp, err := c.GetKeysIdUsage(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseDeleteApiV1AdminKeysIdResponse(rsp)
+	return ParseGetKeysIdUsageResponse(rsp)
 }
 
-// GetApiV1AdminKeysIdWithResponse One key's metadata + `ETag` (never the secret/hash)
+// GetModelsWithResponse Model lanes + upstream providers
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/keys/{id} (the `GetApiV1AdminKeysId` operationId).
-func (c *ClientWithResponses) GetApiV1AdminKeysIdWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetApiV1AdminKeysIdResponse, error) {
-	rsp, err := c.GetApiV1AdminKeysId(ctx, id, reqEditors...)
+// Corresponds with GET /api/v1/admin/models (the `GetModels` operationId).
+func (c *ClientWithResponses) GetModelsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetModelsResponse, error) {
+	rsp, err := c.GetModels(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminKeysIdResponse(rsp)
+	return ParseGetModelsResponse(rsp)
 }
 
-// PatchApiV1AdminKeysIdWithResponse Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency
+// GetOpenapiJsonWithResponse This OpenAPI 3.1 document
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchApiV1AdminKeysId` operationId).
-func (c *ClientWithResponses) PatchApiV1AdminKeysIdWithResponse(ctx context.Context, id string, params *PatchApiV1AdminKeysIdParams, reqEditors ...RequestEditorFn) (*PatchApiV1AdminKeysIdResponse, error) {
-	rsp, err := c.PatchApiV1AdminKeysId(ctx, id, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/openapi.json (the `GetOpenapiJson` operationId).
+func (c *ClientWithResponses) GetOpenapiJsonWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOpenapiJsonResponse, error) {
+	rsp, err := c.GetOpenapiJson(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePatchApiV1AdminKeysIdResponse(rsp)
+	return ParseGetOpenapiJsonResponse(rsp)
 }
 
-// PostApiV1AdminKeysIdRotateWithResponse Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)
+// DeleteOverlaySectionWithResponse DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with POST /api/v1/admin/keys/{id}/rotate (the `PostApiV1AdminKeysIdRotate` operationId).
-func (c *ClientWithResponses) PostApiV1AdminKeysIdRotateWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*PostApiV1AdminKeysIdRotateResponse, error) {
-	rsp, err := c.PostApiV1AdminKeysIdRotate(ctx, id, reqEditors...)
+// Corresponds with DELETE /api/v1/admin/overlay/{section} (the `DeleteOverlaySection` operationId).
+func (c *ClientWithResponses) DeleteOverlaySectionWithResponse(ctx context.Context, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams, reqEditors ...RequestEditorFn) (*DeleteOverlaySectionResponse, error) {
+	rsp, err := c.DeleteOverlaySection(ctx, section, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParsePostApiV1AdminKeysIdRotateResponse(rsp)
+	return ParseDeleteOverlaySectionResponse(rsp)
 }
 
-// GetApiV1AdminKeysIdUsageWithResponse Current-window usage for one key (spend / tokens / requests)
+// GetPluginsWithResponse Plugin catalog by type (compiled-in + external + dynamic-library)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/keys/{id}/usage (the `GetApiV1AdminKeysIdUsage` operationId).
-func (c *ClientWithResponses) GetApiV1AdminKeysIdUsageWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetApiV1AdminKeysIdUsageResponse, error) {
-	rsp, err := c.GetApiV1AdminKeysIdUsage(ctx, id, reqEditors...)
+// Corresponds with GET /api/v1/admin/plugins (the `GetPlugins` operationId).
+func (c *ClientWithResponses) GetPluginsWithResponse(ctx context.Context, params *GetPluginsParams, reqEditors ...RequestEditorFn) (*GetPluginsResponse, error) {
+	rsp, err := c.GetPlugins(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminKeysIdUsageResponse(rsp)
+	return ParseGetPluginsResponse(rsp)
 }
 
-// GetApiV1AdminModelsWithResponse Model lanes + upstream providers
+// PostPluginsWithBodyWithResponse Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+func (c *ClientWithResponses) PostPluginsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsResponse, error) {
+	rsp, err := c.PostPluginsWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostPluginsResponse(rsp)
+}
+
+// PostPluginsWithResponse Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
+func (c *ClientWithResponses) PostPluginsWithResponse(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsResponse, error) {
+	rsp, err := c.PostPlugins(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostPluginsResponse(rsp)
+}
+
+// PostPluginsReloadWithResponse Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/models (the `GetApiV1AdminModels` operationId).
-func (c *ClientWithResponses) GetApiV1AdminModelsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminModelsResponse, error) {
-	rsp, err := c.GetApiV1AdminModels(ctx, reqEditors...)
+// Corresponds with POST /api/v1/admin/plugins/reload (the `PostPluginsReload` operationId).
+func (c *ClientWithResponses) PostPluginsReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostPluginsReloadResponse, error) {
+	rsp, err := c.PostPluginsReload(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminModelsResponse(rsp)
+	return ParsePostPluginsReloadResponse(rsp)
 }
 
-// GetApiV1AdminOpenapiJsonWithResponse This OpenAPI 3.1 document
+// PostPluginsRollbackWithBodyWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+func (c *ClientWithResponses) PostPluginsRollbackWithBodyWithResponse(ctx context.Context, params *PostPluginsRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsRollbackResponse, error) {
+	rsp, err := c.PostPluginsRollbackWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostPluginsRollbackResponse(rsp)
+}
+
+// PostPluginsRollbackWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
+func (c *ClientWithResponses) PostPluginsRollbackWithResponse(ctx context.Context, params *PostPluginsRollbackParams, body PostPluginsRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsRollbackResponse, error) {
+	rsp, err := c.PostPluginsRollback(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostPluginsRollbackResponse(rsp)
+}
+
+// DeletePluginsFileWithResponse Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/openapi.json (the `GetApiV1AdminOpenapiJson` operationId).
-func (c *ClientWithResponses) GetApiV1AdminOpenapiJsonWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminOpenapiJsonResponse, error) {
-	rsp, err := c.GetApiV1AdminOpenapiJson(ctx, reqEditors...)
+// Corresponds with DELETE /api/v1/admin/plugins/{file} (the `DeletePluginsFile` operationId).
+func (c *ClientWithResponses) DeletePluginsFileWithResponse(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*DeletePluginsFileResponse, error) {
+	rsp, err := c.DeletePluginsFile(ctx, file, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminOpenapiJsonResponse(rsp)
+	return ParseDeletePluginsFileResponse(rsp)
 }
 
-// GetApiV1AdminPluginsWithResponse Plugin catalog by type (compiled-in + external)
+// GetPluginsFileSchemaWithResponse The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/plugins (the `GetApiV1AdminPlugins` operationId).
-func (c *ClientWithResponses) GetApiV1AdminPluginsWithResponse(ctx context.Context, params *GetApiV1AdminPluginsParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminPluginsResponse, error) {
-	rsp, err := c.GetApiV1AdminPlugins(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/plugins/{file}/schema (the `GetPluginsFileSchema` operationId).
+func (c *ClientWithResponses) GetPluginsFileSchemaWithResponse(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*GetPluginsFileSchemaResponse, error) {
+	rsp, err := c.GetPluginsFileSchema(ctx, file, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminPluginsResponse(rsp)
+	return ParseGetPluginsFileSchemaResponse(rsp)
 }
 
-// GetApiV1AdminPoolsWithResponse Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
+// GetPoolsWithResponse Pool topology (members + weights). ?detail=true inlines live member status (one call, no N+1)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/pools (the `GetApiV1AdminPools` operationId).
-func (c *ClientWithResponses) GetApiV1AdminPoolsWithResponse(ctx context.Context, params *GetApiV1AdminPoolsParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminPoolsResponse, error) {
-	rsp, err := c.GetApiV1AdminPools(ctx, params, reqEditors...)
+// Corresponds with GET /api/v1/admin/pools (the `GetPools` operationId).
+func (c *ClientWithResponses) GetPoolsWithResponse(ctx context.Context, params *GetPoolsParams, reqEditors ...RequestEditorFn) (*GetPoolsResponse, error) {
+	rsp, err := c.GetPools(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminPoolsResponse(rsp)
+	return ParseGetPoolsResponse(rsp)
 }
 
-// GetApiV1AdminPoolsNameWithResponse Live per-member status of one pool (breaker/concurrency/latency)
+// GetPoolsNameWithResponse Live per-member status of one pool (breaker/concurrency/latency)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/pools/{name} (the `GetApiV1AdminPoolsName` operationId).
-func (c *ClientWithResponses) GetApiV1AdminPoolsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetApiV1AdminPoolsNameResponse, error) {
-	rsp, err := c.GetApiV1AdminPoolsName(ctx, name, reqEditors...)
+// Corresponds with GET /api/v1/admin/pools/{name} (the `GetPoolsName` operationId).
+func (c *ClientWithResponses) GetPoolsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetPoolsNameResponse, error) {
+	rsp, err := c.GetPoolsName(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminPoolsNameResponse(rsp)
+	return ParseGetPoolsNameResponse(rsp)
 }
 
-// GetApiV1AdminProvidersWithResponse Distinct providers + lane counts
+// GetProvidersWithResponse Distinct providers + lane counts
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/providers (the `GetApiV1AdminProviders` operationId).
-func (c *ClientWithResponses) GetApiV1AdminProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AdminProvidersResponse, error) {
-	rsp, err := c.GetApiV1AdminProviders(ctx, reqEditors...)
+// Corresponds with GET /api/v1/admin/providers (the `GetProviders` operationId).
+func (c *ClientWithResponses) GetProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetProvidersResponse, error) {
+	rsp, err := c.GetProviders(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminProvidersResponse(rsp)
+	return ParseGetProvidersResponse(rsp)
 }
 
-// GetApiV1AdminUsageWithResponse Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+// PostRestartWithBodyWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+func (c *ClientWithResponses) PostRestartWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostRestartResponse, error) {
+	rsp, err := c.PostRestartWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostRestartResponse(rsp)
+}
+
+// PostRestartWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
+func (c *ClientWithResponses) PostRestartWithResponse(ctx context.Context, body PostRestartJSONRequestBody, reqEditors ...RequestEditorFn) (*PostRestartResponse, error) {
+	rsp, err := c.PostRestart(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostRestartResponse(rsp)
+}
+
+// PostSigningKeyRotateWithResponse ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
 //
 // Returns a wrapper object for the known response body format(s).
 //
-// Corresponds with GET /api/v1/admin/usage (the `GetApiV1AdminUsage` operationId).
-func (c *ClientWithResponses) GetApiV1AdminUsageWithResponse(ctx context.Context, params *GetApiV1AdminUsageParams, reqEditors ...RequestEditorFn) (*GetApiV1AdminUsageResponse, error) {
-	rsp, err := c.GetApiV1AdminUsage(ctx, params, reqEditors...)
+// Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
+func (c *ClientWithResponses) PostSigningKeyRotateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSigningKeyRotateResponse, error) {
+	rsp, err := c.PostSigningKeyRotate(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1AdminUsageResponse(rsp)
+	return ParsePostSigningKeyRotateResponse(rsp)
 }
 
-// ParseGetApiV1AdminAdminAuthResponse parses an HTTP response from a GetApiV1AdminAdminAuthWithResponse call
-func ParseGetApiV1AdminAdminAuthResponse(rsp *http.Response) (*GetApiV1AdminAdminAuthResponse, error) {
+// GetUsageWithResponse Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/admin/usage (the `GetUsage` operationId).
+func (c *ClientWithResponses) GetUsageWithResponse(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*GetUsageResponse, error) {
+	rsp, err := c.GetUsage(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetUsageResponse(rsp)
+}
+
+// ParseGetAdminAuthResponse parses an HTTP response from a GetAdminAuthWithResponse call
+func ParseGetAdminAuthResponse(rsp *http.Response) (*GetAdminAuthResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminAdminAuthResponse{
+	response := &GetAdminAuthResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AdminAuthView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePutApiV1AdminAdminAuthResponse parses an HTTP response from a PutApiV1AdminAdminAuthWithResponse call
-func ParsePutApiV1AdminAdminAuthResponse(rsp *http.Response) (*PutApiV1AdminAdminAuthResponse, error) {
+// ParsePutAdminAuthResponse parses an HTTP response from a PutAdminAuthWithResponse call
+func ParsePutAdminAuthResponse(rsp *http.Response) (*PutAdminAuthResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PutApiV1AdminAdminAuthResponse{
+	response := &PutAdminAuthResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AdminAuthPutView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminAuditResponse parses an HTTP response from a GetApiV1AdminAuditWithResponse call
-func ParseGetApiV1AdminAuditResponse(rsp *http.Response) (*GetApiV1AdminAuditResponse, error) {
+// ParseGetAuditResponse parses an HTTP response from a GetAuditWithResponse call
+func ParseGetAuditResponse(rsp *http.Response) (*GetAuditResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminAuditResponse{
+	response := &GetAuditResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AuditPageView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminAuthResponse parses an HTTP response from a GetApiV1AdminAuthWithResponse call
-func ParseGetApiV1AdminAuthResponse(rsp *http.Response) (*GetApiV1AdminAuthResponse, error) {
+// ParseGetAuthResponse parses an HTTP response from a GetAuthWithResponse call
+func ParseGetAuthResponse(rsp *http.Response) (*GetAuthResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminAuthResponse{
+	response := &GetAuthResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AuthView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminAuthCacheFlushResponse parses an HTTP response from a PostApiV1AdminAuthCacheFlushWithResponse call
-func ParsePostApiV1AdminAuthCacheFlushResponse(rsp *http.Response) (*PostApiV1AdminAuthCacheFlushResponse, error) {
+// ParsePostAuthCacheFlushResponse parses an HTTP response from a PostAuthCacheFlushWithResponse call
+func ParsePostAuthCacheFlushResponse(rsp *http.Response) (*PostAuthCacheFlushResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminAuthCacheFlushResponse{
+	response := &PostAuthCacheFlushResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest CacheFlushView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminConfigResponse parses an HTTP response from a GetApiV1AdminConfigWithResponse call
-func ParseGetApiV1AdminConfigResponse(rsp *http.Response) (*GetApiV1AdminConfigResponse, error) {
+// ParseGetConfigResponse parses an HTTP response from a GetConfigWithResponse call
+func ParseGetConfigResponse(rsp *http.Response) (*GetConfigResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminConfigResponse{
+	response := &GetConfigResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EffectiveConfigView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminConfigApplyResponse parses an HTTP response from a PostApiV1AdminConfigApplyWithResponse call
-func ParsePostApiV1AdminConfigApplyResponse(rsp *http.Response) (*PostApiV1AdminConfigApplyResponse, error) {
+// ParsePostConfigApplyResponse parses an HTTP response from a PostConfigApplyWithResponse call
+func ParsePostConfigApplyResponse(rsp *http.Response) (*PostConfigApplyResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminConfigApplyResponse{
+	response := &PostConfigApplyResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigApplyView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminConfigDiffResponse parses an HTTP response from a GetApiV1AdminConfigDiffWithResponse call
-func ParseGetApiV1AdminConfigDiffResponse(rsp *http.Response) (*GetApiV1AdminConfigDiffResponse, error) {
+// ParseGetConfigDiffResponse parses an HTTP response from a GetConfigDiffWithResponse call
+func ParseGetConfigDiffResponse(rsp *http.Response) (*GetConfigDiffResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminConfigDiffResponse{
+	response := &GetConfigDiffResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigDiffView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminConfigReloadResponse parses an HTTP response from a PostApiV1AdminConfigReloadWithResponse call
-func ParsePostApiV1AdminConfigReloadResponse(rsp *http.Response) (*PostApiV1AdminConfigReloadResponse, error) {
+// ParsePostConfigReloadResponse parses an HTTP response from a PostConfigReloadWithResponse call
+func ParsePostConfigReloadResponse(rsp *http.Response) (*PostConfigReloadResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminConfigReloadResponse{
+	response := &PostConfigReloadResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigReloadView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminConfigRollbackResponse parses an HTTP response from a PostApiV1AdminConfigRollbackWithResponse call
-func ParsePostApiV1AdminConfigRollbackResponse(rsp *http.Response) (*PostApiV1AdminConfigRollbackResponse, error) {
+// ParsePostConfigRollbackResponse parses an HTTP response from a PostConfigRollbackWithResponse call
+func ParsePostConfigRollbackResponse(rsp *http.Response) (*PostConfigRollbackResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminConfigRollbackResponse{
+	response := &PostConfigRollbackResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigRollbackView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminConfigValidateResponse parses an HTTP response from a PostApiV1AdminConfigValidateWithResponse call
-func ParsePostApiV1AdminConfigValidateResponse(rsp *http.Response) (*PostApiV1AdminConfigValidateResponse, error) {
+// ParseGetConfigSettingsResponse parses an HTTP response from a GetConfigSettingsWithResponse call
+func ParseGetConfigSettingsResponse(rsp *http.Response) (*GetConfigSettingsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminConfigValidateResponse{
+	response := &GetConfigSettingsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigSettingsView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminConfigVersionsResponse parses an HTTP response from a GetApiV1AdminConfigVersionsWithResponse call
-func ParseGetApiV1AdminConfigVersionsResponse(rsp *http.Response) (*GetApiV1AdminConfigVersionsResponse, error) {
+// ParsePutConfigSettingsResponse parses an HTTP response from a PutConfigSettingsWithResponse call
+func ParsePutConfigSettingsResponse(rsp *http.Response) (*PutConfigSettingsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminConfigVersionsResponse{
+	response := &PutConfigSettingsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigSettingsView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminConfigVersionsVResponse parses an HTTP response from a GetApiV1AdminConfigVersionsVWithResponse call
-func ParseGetApiV1AdminConfigVersionsVResponse(rsp *http.Response) (*GetApiV1AdminConfigVersionsVResponse, error) {
+// ParsePostConfigValidateResponse parses an HTTP response from a PostConfigValidateWithResponse call
+func ParsePostConfigValidateResponse(rsp *http.Response) (*PostConfigValidateResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminConfigVersionsVResponse{
+	response := &PostConfigValidateResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigValidateView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminHooksResponse parses an HTTP response from a GetApiV1AdminHooksWithResponse call
-func ParseGetApiV1AdminHooksResponse(rsp *http.Response) (*GetApiV1AdminHooksResponse, error) {
+// ParseGetConfigVersionsResponse parses an HTTP response from a GetConfigVersionsWithResponse call
+func ParseGetConfigVersionsResponse(rsp *http.Response) (*GetConfigVersionsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminHooksResponse{
+	response := &GetConfigVersionsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigVersionPageView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminHooksResponse parses an HTTP response from a PostApiV1AdminHooksWithResponse call
-func ParsePostApiV1AdminHooksResponse(rsp *http.Response) (*PostApiV1AdminHooksResponse, error) {
+// ParseGetConfigVersionsVResponse parses an HTTP response from a GetConfigVersionsVWithResponse call
+func ParseGetConfigVersionsVResponse(rsp *http.Response) (*GetConfigVersionsVResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminHooksResponse{
+	response := &GetConfigVersionsVResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConfigVersionDetailView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseDeleteApiV1AdminHooksNameResponse parses an HTTP response from a DeleteApiV1AdminHooksNameWithResponse call
-func ParseDeleteApiV1AdminHooksNameResponse(rsp *http.Response) (*DeleteApiV1AdminHooksNameResponse, error) {
+// ParseGetGroupsResponse parses an HTTP response from a GetGroupsWithResponse call
+func ParseGetGroupsResponse(rsp *http.Response) (*GetGroupsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &DeleteApiV1AdminHooksNameResponse{
+	response := &GetGroupsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PageGroupView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminHooksNameResponse parses an HTTP response from a GetApiV1AdminHooksNameWithResponse call
-func ParseGetApiV1AdminHooksNameResponse(rsp *http.Response) (*GetApiV1AdminHooksNameResponse, error) {
+// ParsePostGroupsResponse parses an HTTP response from a PostGroupsWithResponse call
+func ParsePostGroupsResponse(rsp *http.Response) (*PostGroupsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminHooksNameResponse{
+	response := &PostGroupsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GroupView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest GroupView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePutApiV1AdminHooksNameResponse parses an HTTP response from a PutApiV1AdminHooksNameWithResponse call
-func ParsePutApiV1AdminHooksNameResponse(rsp *http.Response) (*PutApiV1AdminHooksNameResponse, error) {
+// ParseDeleteGroupsNameResponse parses an HTTP response from a DeleteGroupsNameWithResponse call
+func ParseDeleteGroupsNameResponse(rsp *http.Response) (*DeleteGroupsNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PutApiV1AdminHooksNameResponse{
+	response := &DeleteGroupsNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminHooksNameHealthResponse parses an HTTP response from a GetApiV1AdminHooksNameHealthWithResponse call
-func ParseGetApiV1AdminHooksNameHealthResponse(rsp *http.Response) (*GetApiV1AdminHooksNameHealthResponse, error) {
+// ParseGetGroupsNameResponse parses an HTTP response from a GetGroupsNameWithResponse call
+func ParseGetGroupsNameResponse(rsp *http.Response) (*GetGroupsNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminHooksNameHealthResponse{
+	response := &GetGroupsNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GroupView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminHooksNameSchemaResponse parses an HTTP response from a GetApiV1AdminHooksNameSchemaWithResponse call
-func ParseGetApiV1AdminHooksNameSchemaResponse(rsp *http.Response) (*GetApiV1AdminHooksNameSchemaResponse, error) {
+// ParsePatchGroupsNameResponse parses an HTTP response from a PatchGroupsNameWithResponse call
+func ParsePatchGroupsNameResponse(rsp *http.Response) (*PatchGroupsNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminHooksNameSchemaResponse{
+	response := &PatchGroupsNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GroupView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePatchApiV1AdminHooksNameSettingsResponse parses an HTTP response from a PatchApiV1AdminHooksNameSettingsWithResponse call
-func ParsePatchApiV1AdminHooksNameSettingsResponse(rsp *http.Response) (*PatchApiV1AdminHooksNameSettingsResponse, error) {
+// ParsePutGroupsNameResponse parses an HTTP response from a PutGroupsNameWithResponse call
+func ParsePutGroupsNameResponse(rsp *http.Response) (*PutGroupsNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PatchApiV1AdminHooksNameSettingsResponse{
+	response := &PutGroupsNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GroupView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminHooksNameStatusResponse parses an HTTP response from a GetApiV1AdminHooksNameStatusWithResponse call
-func ParseGetApiV1AdminHooksNameStatusResponse(rsp *http.Response) (*GetApiV1AdminHooksNameStatusResponse, error) {
+// ParseGetGroupsNameUsageResponse parses an HTTP response from a GetGroupsNameUsageWithResponse call
+func ParseGetGroupsNameUsageResponse(rsp *http.Response) (*GetGroupsNameUsageResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminHooksNameStatusResponse{
+	response := &GetGroupsNameUsageResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GroupUsageView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminInfoResponse parses an HTTP response from a GetApiV1AdminInfoWithResponse call
-func ParseGetApiV1AdminInfoResponse(rsp *http.Response) (*GetApiV1AdminInfoResponse, error) {
+// ParseGetHooksResponse parses an HTTP response from a GetHooksWithResponse call
+func ParseGetHooksResponse(rsp *http.Response) (*GetHooksResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminInfoResponse{
+	response := &GetHooksResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PageHookView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminKeysResponse parses an HTTP response from a GetApiV1AdminKeysWithResponse call
-func ParseGetApiV1AdminKeysResponse(rsp *http.Response) (*GetApiV1AdminKeysResponse, error) {
+// ParsePostHooksResponse parses an HTTP response from a PostHooksWithResponse call
+func ParsePostHooksResponse(rsp *http.Response) (*PostHooksResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminKeysResponse{
+	response := &PostHooksResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest HookView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminKeysResponse parses an HTTP response from a PostApiV1AdminKeysWithResponse call
-func ParsePostApiV1AdminKeysResponse(rsp *http.Response) (*PostApiV1AdminKeysResponse, error) {
+// ParseDeleteHooksNameResponse parses an HTTP response from a DeleteHooksNameWithResponse call
+func ParseDeleteHooksNameResponse(rsp *http.Response) (*DeleteHooksNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminKeysResponse{
+	response := &DeleteHooksNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseDeleteApiV1AdminKeysIdResponse parses an HTTP response from a DeleteApiV1AdminKeysIdWithResponse call
-func ParseDeleteApiV1AdminKeysIdResponse(rsp *http.Response) (*DeleteApiV1AdminKeysIdResponse, error) {
+// ParseGetHooksNameResponse parses an HTTP response from a GetHooksNameWithResponse call
+func ParseGetHooksNameResponse(rsp *http.Response) (*GetHooksNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &DeleteApiV1AdminKeysIdResponse{
+	response := &GetHooksNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminKeysIdResponse parses an HTTP response from a GetApiV1AdminKeysIdWithResponse call
-func ParseGetApiV1AdminKeysIdResponse(rsp *http.Response) (*GetApiV1AdminKeysIdResponse, error) {
+// ParsePutHooksNameResponse parses an HTTP response from a PutHooksNameWithResponse call
+func ParsePutHooksNameResponse(rsp *http.Response) (*PutHooksNameResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminKeysIdResponse{
+	response := &PutHooksNameResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePatchApiV1AdminKeysIdResponse parses an HTTP response from a PatchApiV1AdminKeysIdWithResponse call
-func ParsePatchApiV1AdminKeysIdResponse(rsp *http.Response) (*PatchApiV1AdminKeysIdResponse, error) {
+// ParseGetHooksNameHealthResponse parses an HTTP response from a GetHooksNameHealthWithResponse call
+func ParseGetHooksNameHealthResponse(rsp *http.Response) (*GetHooksNameHealthResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PatchApiV1AdminKeysIdResponse{
+	response := &GetHooksNameHealthResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookHealthView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParsePostApiV1AdminKeysIdRotateResponse parses an HTTP response from a PostApiV1AdminKeysIdRotateWithResponse call
-func ParsePostApiV1AdminKeysIdRotateResponse(rsp *http.Response) (*PostApiV1AdminKeysIdRotateResponse, error) {
+// ParseGetHooksNameSchemaResponse parses an HTTP response from a GetHooksNameSchemaWithResponse call
+func ParseGetHooksNameSchemaResponse(rsp *http.Response) (*GetHooksNameSchemaResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &PostApiV1AdminKeysIdRotateResponse{
+	response := &GetHooksNameSchemaResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookSchemaView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminKeysIdUsageResponse parses an HTTP response from a GetApiV1AdminKeysIdUsageWithResponse call
-func ParseGetApiV1AdminKeysIdUsageResponse(rsp *http.Response) (*GetApiV1AdminKeysIdUsageResponse, error) {
+// ParsePatchHooksNameSettingsResponse parses an HTTP response from a PatchHooksNameSettingsWithResponse call
+func ParsePatchHooksNameSettingsResponse(rsp *http.Response) (*PatchHooksNameSettingsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminKeysIdUsageResponse{
+	response := &PatchHooksNameSettingsResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminModelsResponse parses an HTTP response from a GetApiV1AdminModelsWithResponse call
-func ParseGetApiV1AdminModelsResponse(rsp *http.Response) (*GetApiV1AdminModelsResponse, error) {
+// ParseGetHooksNameStatusResponse parses an HTTP response from a GetHooksNameStatusWithResponse call
+func ParseGetHooksNameStatusResponse(rsp *http.Response) (*GetHooksNameStatusResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminModelsResponse{
+	response := &GetHooksNameStatusResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HookStatusView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminOpenapiJsonResponse parses an HTTP response from a GetApiV1AdminOpenapiJsonWithResponse call
-func ParseGetApiV1AdminOpenapiJsonResponse(rsp *http.Response) (*GetApiV1AdminOpenapiJsonResponse, error) {
+// ParseGetInfoResponse parses an HTTP response from a GetInfoWithResponse call
+func ParseGetInfoResponse(rsp *http.Response) (*GetInfoResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminOpenapiJsonResponse{
+	response := &GetInfoResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest InfoView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminPluginsResponse parses an HTTP response from a GetApiV1AdminPluginsWithResponse call
-func ParseGetApiV1AdminPluginsResponse(rsp *http.Response) (*GetApiV1AdminPluginsResponse, error) {
+// ParseGetKeysResponse parses an HTTP response from a GetKeysWithResponse call
+func ParseGetKeysResponse(rsp *http.Response) (*GetKeysResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminPluginsResponse{
+	response := &GetKeysResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest KeyPageView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminPoolsResponse parses an HTTP response from a GetApiV1AdminPoolsWithResponse call
-func ParseGetApiV1AdminPoolsResponse(rsp *http.Response) (*GetApiV1AdminPoolsResponse, error) {
+// ParsePostKeysResponse parses an HTTP response from a PostKeysWithResponse call
+func ParsePostKeysResponse(rsp *http.Response) (*PostKeysResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminPoolsResponse{
+	response := &PostKeysResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CreatedKeyView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminPoolsNameResponse parses an HTTP response from a GetApiV1AdminPoolsNameWithResponse call
-func ParseGetApiV1AdminPoolsNameResponse(rsp *http.Response) (*GetApiV1AdminPoolsNameResponse, error) {
+// ParseDeleteKeysIdResponse parses an HTTP response from a DeleteKeysIdWithResponse call
+func ParseDeleteKeysIdResponse(rsp *http.Response) (*DeleteKeysIdResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminPoolsNameResponse{
+	response := &DeleteKeysIdResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminProvidersResponse parses an HTTP response from a GetApiV1AdminProvidersWithResponse call
-func ParseGetApiV1AdminProvidersResponse(rsp *http.Response) (*GetApiV1AdminProvidersResponse, error) {
+// ParseGetKeysIdResponse parses an HTTP response from a GetKeysIdWithResponse call
+func ParseGetKeysIdResponse(rsp *http.Response) (*GetKeysIdResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminProvidersResponse{
+	response := &GetKeysIdResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest KeyView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
 }
 
-// ParseGetApiV1AdminUsageResponse parses an HTTP response from a GetApiV1AdminUsageWithResponse call
-func ParseGetApiV1AdminUsageResponse(rsp *http.Response) (*GetApiV1AdminUsageResponse, error) {
+// ParsePatchKeysIdResponse parses an HTTP response from a PatchKeysIdWithResponse call
+func ParsePatchKeysIdResponse(rsp *http.Response) (*PatchKeysIdResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1AdminUsageResponse{
+	response := &PatchKeysIdResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest KeyView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostKeysIdRevokeResponse parses an HTTP response from a PostKeysIdRevokeWithResponse call
+func ParsePostKeysIdRevokeResponse(rsp *http.Response) (*PostKeysIdRevokeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostKeysIdRevokeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RevokeView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostKeysIdRotateResponse parses an HTTP response from a PostKeysIdRotateWithResponse call
+func ParsePostKeysIdRotateResponse(rsp *http.Response) (*PostKeysIdRotateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostKeysIdRotateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RotatedKeyView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetKeysIdUsageResponse parses an HTTP response from a GetKeysIdUsageWithResponse call
+func ParseGetKeysIdUsageResponse(rsp *http.Response) (*GetKeysIdUsageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetKeysIdUsageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest KeyMeteringView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetModelsResponse parses an HTTP response from a GetModelsWithResponse call
+func ParseGetModelsResponse(rsp *http.Response) (*GetModelsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetModelsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PageModelView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetOpenapiJsonResponse parses an HTTP response from a GetOpenapiJsonWithResponse call
+func ParseGetOpenapiJsonResponse(rsp *http.Response) (*GetOpenapiJsonResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetOpenapiJsonResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteOverlaySectionResponse parses an HTTP response from a DeleteOverlaySectionWithResponse call
+func ParseDeleteOverlaySectionResponse(rsp *http.Response) (*DeleteOverlaySectionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteOverlaySectionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest OverlayResetView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPluginsResponse parses an HTTP response from a GetPluginsWithResponse call
+func ParseGetPluginsResponse(rsp *http.Response) (*GetPluginsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPluginsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PagePluginView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostPluginsResponse parses an HTTP response from a PostPluginsWithResponse call
+func ParsePostPluginsResponse(rsp *http.Response) (*PostPluginsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostPluginsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest PluginInstallView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostPluginsReloadResponse parses an HTTP response from a PostPluginsReloadWithResponse call
+func ParsePostPluginsReloadResponse(rsp *http.Response) (*PostPluginsReloadResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostPluginsReloadResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PluginReloadView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostPluginsRollbackResponse parses an HTTP response from a PostPluginsRollbackWithResponse call
+func ParsePostPluginsRollbackResponse(rsp *http.Response) (*PostPluginsRollbackResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostPluginsRollbackResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PluginRollbackView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeletePluginsFileResponse parses an HTTP response from a DeletePluginsFileWithResponse call
+func ParseDeletePluginsFileResponse(rsp *http.Response) (*DeletePluginsFileResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeletePluginsFileResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPluginsFileSchemaResponse parses an HTTP response from a GetPluginsFileSchemaWithResponse call
+func ParseGetPluginsFileSchemaResponse(rsp *http.Response) (*GetPluginsFileSchemaResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPluginsFileSchemaResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PluginSchemaView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPoolsResponse parses an HTTP response from a GetPoolsWithResponse call
+func ParseGetPoolsResponse(rsp *http.Response) (*GetPoolsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPoolsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PagePoolView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPoolsNameResponse parses an HTTP response from a GetPoolsNameWithResponse call
+func ParseGetPoolsNameResponse(rsp *http.Response) (*GetPoolsNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPoolsNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PoolDetailView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetProvidersResponse parses an HTTP response from a GetProvidersWithResponse call
+func ParseGetProvidersResponse(rsp *http.Response) (*GetProvidersResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetProvidersResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PageProviderView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostRestartResponse parses an HTTP response from a PostRestartWithResponse call
+func ParsePostRestartResponse(rsp *http.Response) (*PostRestartResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostRestartResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest RestartView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostSigningKeyRotateResponse parses an HTTP response from a PostSigningKeyRotateWithResponse call
+func ParsePostSigningKeyRotateResponse(rsp *http.Response) (*PostSigningKeyRotateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostSigningKeyRotateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SigningKeyRotateView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetUsageResponse parses an HTTP response from a GetUsageWithResponse call
+func ParseGetUsageResponse(rsp *http.Response) (*GetUsageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetUsageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest UsageView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
