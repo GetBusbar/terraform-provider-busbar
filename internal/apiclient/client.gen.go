@@ -668,6 +668,15 @@ type InfoView struct {
 	Version string `json:"version"`
 }
 
+// InspectPluginReq `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] (question
+// #7 — "same request body shape as `POST /plugins`") — `file` is accepted for shape parity with
+// the install flow a UI composes around the same upload, but is otherwise UNUSED here: inspect
+// never writes anything to disk, so there is no filename to bind an install would need.
+type InspectPluginReq struct {
+	File       string `json:"file"`
+	TarballB64 string `json:"tarball_b64"`
+}
+
 // InstallPluginReq The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
 // bytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a
 // clean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the
@@ -949,7 +958,16 @@ type PluginRollbackView struct {
 // `{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest
 // precedence rule from context — the server always picks exactly one source and reports which.
 type PluginSchemaView struct {
-	Name string `json:"name"`
+	// Kind The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`
+	// and `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a
+	// manifest). Declared so codegen'd clients keep it.
+	Kind *string `json:"kind,omitempty"`
+	Name string  `json:"name"`
+
+	// RestartRequiredDefault The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so
+	// busbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`
+	// only when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.
+	RestartRequiredDefault *bool `json:"restart_required_default,omitempty"`
 
 	// Schema The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never
 	// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
@@ -972,6 +990,12 @@ type PluginSchemaView struct {
 	// Trust `"trusted" | "unverified" | "rejected"` — the same vocabulary the plugin catalog already
 	// uses (never `"verified"`; question #8, round-4 correction).
 	Trust string `json:"trust"`
+
+	// Version The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which
+	// previews an on-disk candidate's manifest); `null`/absent on `GET /plugins/{file}/schema`, which
+	// does not surface the version. Declared here so a codegen'd client keeps the field the inspect
+	// handler always sends, rather than silently dropping it.
+	Version *string `json:"version,omitempty"`
 }
 
 // PluginView One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
@@ -1565,6 +1589,9 @@ type PatchKeysIdJSONRequestBody = UpdateKeyReq
 // PostPluginsJSONRequestBody defines body for PostPlugins for application/json ContentType.
 type PostPluginsJSONRequestBody = InstallPluginReq
 
+// PostPluginsInspectJSONRequestBody defines body for PostPluginsInspect for application/json ContentType.
+type PostPluginsInspectJSONRequestBody = InspectPluginReq
+
 // PostPluginsRollbackJSONRequestBody defines body for PostPluginsRollback for application/json ContentType.
 type PostPluginsRollbackJSONRequestBody = PluginRollbackReq
 
@@ -2004,6 +2031,20 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
 	PostPlugins(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPluginsInspectWithBody Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+	PostPluginsInspectWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostPluginsInspect Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+	PostPluginsInspect(ctx context.Context, body PostPluginsInspectJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PostPluginsReload Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
 	//
@@ -3024,6 +3065,40 @@ func (c *Client) PostPluginsWithBody(ctx context.Context, contentType string, bo
 // Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
 func (c *Client) PostPlugins(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostPluginsRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPluginsInspectWithBody Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+func (c *Client) PostPluginsInspectWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsInspectRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostPluginsInspect Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+func (c *Client) PostPluginsInspect(ctx context.Context, body PostPluginsInspectJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostPluginsInspectRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5240,6 +5315,46 @@ func NewPostPluginsRequestWithBody(server string, contentType string, body io.Re
 	return req, nil
 }
 
+// NewPostPluginsInspectRequest calls the generic PostPluginsInspect builder with application/json body
+func NewPostPluginsInspectRequest(server string, body PostPluginsInspectJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostPluginsInspectRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostPluginsInspectRequestWithBody constructs an http.Request for the PostPluginsInspect method, with any body, and a specified content type
+func NewPostPluginsInspectRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/plugins/inspect")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewPostPluginsReloadRequest constructs an http.Request for the PostPluginsReload method
 func NewPostPluginsReloadRequest(server string) (*http.Request, error) {
 	var err error
@@ -6089,6 +6204,20 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
 	PostPluginsWithResponse(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsResponse, error)
+
+	// PostPluginsInspectWithBodyWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+	PostPluginsInspectWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsInspectResponse, error)
+
+	// PostPluginsInspectWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+	PostPluginsInspectWithResponse(ctx context.Context, body PostPluginsInspectJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsInspectResponse, error)
 
 	// PostPluginsReloadWithResponse Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
 	//
@@ -9595,6 +9724,82 @@ func (r PostPluginsResponse) ContentType() string {
 	return ""
 }
 
+type PostPluginsInspectResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PluginSchemaView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostPluginsInspectResponse) GetJSON200() *PluginSchemaView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostPluginsInspectResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostPluginsInspectResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PostPluginsInspectResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PostPluginsInspectResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostPluginsInspectResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostPluginsInspectResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostPluginsInspectResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostPluginsInspectResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostPluginsInspectResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type PostPluginsReloadResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -11112,6 +11317,32 @@ func (c *ClientWithResponses) PostPluginsWithResponse(ctx context.Context, body 
 		return nil, err
 	}
 	return ParsePostPluginsResponse(rsp)
+}
+
+// PostPluginsInspectWithBodyWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+func (c *ClientWithResponses) PostPluginsInspectWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsInspectResponse, error) {
+	rsp, err := c.PostPluginsInspectWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostPluginsInspectResponse(rsp)
+}
+
+// PostPluginsInspectWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
+func (c *ClientWithResponses) PostPluginsInspectWithResponse(ctx context.Context, body PostPluginsInspectJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsInspectResponse, error) {
+	rsp, err := c.PostPluginsInspect(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostPluginsInspectResponse(rsp)
 }
 
 // PostPluginsReloadWithResponse Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load
@@ -14004,6 +14235,67 @@ func ParsePostPluginsResponse(rsp *http.Response) (*PostPluginsResponse, error) 
 			return nil, err
 		}
 		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostPluginsInspectResponse parses an HTTP response from a PostPluginsInspectWithResponse call
+func ParsePostPluginsInspectResponse(rsp *http.Response) (*PostPluginsInspectResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostPluginsInspectResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PluginSchemaView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest Error
