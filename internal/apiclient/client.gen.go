@@ -79,7 +79,7 @@ func (e DeleteOverlaySectionParamsSection) Valid() bool {
 	}
 }
 
-// AdminAuthPutView `PUT /admin-auth` — the resource post-state (`{configured, modules}`, the same shape
+// AdminAuthPutView `PUT /admin-auth`: the resource post-state (`{configured, modules}`, the same shape
 // `GET /admin-auth` returns) plus apply metadata, so a client uses the PUT response as post-state.
 type AdminAuthPutView struct {
 	Applied       bool     `json:"applied"`
@@ -89,15 +89,15 @@ type AdminAuthPutView struct {
 	Note          string   `json:"note"`
 }
 
-// AdminAuthView The admin-plane auth read (`GET /api/v1/admin/admin-auth`) — which modules guard the ADMIN surface
+// AdminAuthView The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
 // (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
 // resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
-// the open (anonymous, full-authority) dev posture — `configured: false`. Never a secret.
+// the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
 type AdminAuthView struct {
 	// Configured Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
 	Configured bool `json:"configured"`
 
-	// Modules The active admin-plane guard module names — the `admin_auth` chain verbatim (e.g.
+	// Modules The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.
 	// `["admin-tokens"]`), reported in order. Empty when the admin plane is open.
 	Modules []string `json:"modules"`
 }
@@ -105,13 +105,13 @@ type AdminAuthView struct {
 // AuditEntry One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 // HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
 // outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
-// altered/reordered/deleted entry (detection, not prevention — a compromised host can still rewrite
+// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
 // the whole chain; prevention is shipping the log off-box to a SIEM).
 type AuditEntry struct {
 	// Action The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).
 	Action string `json:"action"`
 
-	// Hash `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the tamper-evidence digest.
+	// Hash `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
 	Hash string `json:"hash"`
 
 	// Outcome Stable outcome token: `applied` (mutation committed) | `rejected` (validation/conflict, nothing
@@ -122,7 +122,7 @@ type AuditEntry struct {
 	// entry whose predecessor was pruned).
 	PrevHash string `json:"prev_hash"`
 
-	// Principal WHO — the authenticated principal id that attempted the mutation (`admin` for the operator
+	// Principal WHO: the authenticated principal id that attempted the mutation (`admin` for the operator
 	// token; a virtual-key id or an external module's principal id otherwise; `anonymous` for the
 	// explicit open admin posture). Attribution, never a credential.
 	Principal string `json:"principal"`
@@ -137,7 +137,7 @@ type AuditEntry struct {
 	Ts uint64 `json:"ts"`
 }
 
-// AuditPageView `GET /audit` — the cursor-paginated audit-log envelope (`{items, next_cursor}`, hand-rolled in the
+// AuditPageView `GET /audit`: the cursor-paginated audit-log envelope (`{items, next_cursor}`, hand-rolled in the
 // audit handler).
 type AuditPageView struct {
 	Items      []AuditEntry `json:"items"`
@@ -145,7 +145,7 @@ type AuditPageView struct {
 }
 
 // AuthView The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
-// callers + the upstream-credential mode. Never a secret — module names and the mode are config
+// callers + the upstream-credential mode. Never a secret: module names and the mode are config
 // identifiers, not credentials. An empty `chain` is the open front door (admits every request).
 type AuthView struct {
 	// Chain Ordered auth-chain module names (`[]` = open front door).
@@ -167,29 +167,29 @@ type BuildInfo struct {
 	// HookPlugins Hook plugins baked into this binary (e.g. `["ranking"]`).
 	HookPlugins []string `json:"hook_plugins"`
 
-	// WeightedFloor The inline SWRR floor — ALWAYS `true` (compiled in unconditionally, non-removable).
+	// WeightedFloor The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
 	WeightedFloor bool `json:"weighted_floor"`
 }
 
-// CacheFlushView `POST /auth/cache/flush` — number of cached credential-decision entries dropped.
+// CacheFlushView `POST /auth/cache/flush`: number of cached credential-decision entries dropped.
 type CacheFlushView struct {
 	Flushed uint `json:"flushed"`
 }
 
-// ConfigApplyView `POST /config/apply` — apply-a-full-config result. The change is live but not written to disk.
+// ConfigApplyView `POST /config/apply`: apply-a-full-config result. The change is live but not written to disk.
 type ConfigApplyView struct {
 	Applied       bool   `json:"applied"`
 	ConfigVersion uint64 `json:"config_version"`
 	Note          string `json:"note"`
 }
 
-// ConfigDiffGlobalHooks The `global_hooks` delta of a `GET /config/diff` — present only when the global wiring changed.
+// ConfigDiffGlobalHooks The `global_hooks` delta of a `GET /config/diff`, present only when the global wiring changed.
 type ConfigDiffGlobalHooks struct {
 	From []string `json:"from"`
 	To   []string `json:"to"`
 }
 
-// ConfigDiffHooks The `hooks` object of a `GET /config/diff` — hook names added / removed / changed between the two
+// ConfigDiffHooks The `hooks` object of a `GET /config/diff`: hook names added / removed / changed between the two
 // versions.
 type ConfigDiffHooks struct {
 	Added   []string `json:"added"`
@@ -197,54 +197,69 @@ type ConfigDiffHooks struct {
 	Removed []string `json:"removed"`
 }
 
-// ConfigDiffView `GET /config/diff` — structured hook-surface diff between two retained versions. `global_hooks` is
+// ConfigDiffView `GET /config/diff`: structured hook-surface diff between two retained versions. `global_hooks` is
 // present only when the global wiring differed between the two sides.
 type ConfigDiffView struct {
 	From        uint64                 `json:"from"`
 	GlobalHooks *ConfigDiffGlobalHooks `json:"global_hooks,omitempty"`
 
-	// Hooks The `hooks` object of a `GET /config/diff` — hook names added / removed / changed between the two
+	// Hooks The `hooks` object of a `GET /config/diff`: hook names added / removed / changed between the two
 	// versions.
 	Hooks ConfigDiffHooks `json:"hooks"`
 	To    uint64          `json:"to"`
 }
 
-// ConfigReloadView `POST /config/reload` — reload-from-disk result.
+// ConfigReloadView `POST /config/reload`: reload-from-disk result.
 type ConfigReloadView struct {
 	ConfigVersion uint64 `json:"config_version"`
 	Reloaded      bool   `json:"reloaded"`
 }
 
-// ConfigRollbackView `POST /config/rollback` — restore-a-retained-version result (the restored version + the NEW
+// ConfigRollbackView `POST /config/rollback`: restore-a-retained-version result (the restored version + the NEW
 // config version the rollback produced).
 type ConfigRollbackView struct {
 	ConfigVersion   uint64 `json:"config_version"`
 	RestoredVersion uint64 `json:"restored_version"`
 }
 
-// ConfigSettingsView `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
+// ConfigSettingsView `GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config
 // overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
 // root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
-// a restart WHEN a config overlay is configured (`BUSBAR_CONFIG_OVERLAY`) — a busbar with none
-// applies the change live only, and `note` says so; `PUT` with `"persist": true` makes storage
-// mandatory, refusing (`400`) rather than silently applying in memory when no overlay exists.
+// a restart. 1.5.3: a MUTABLE config always has a writable `config.overlay` backend (the boot
+// invariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses
+// the PUT (`400`) instead of applying it in memory only; the silent-loss outcome is gone.
 // `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
-// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are
-// read once at process start, and the durable `store` backend is reused across a hot reload — none
-// can hot-swap, so they take effect on the next RESTART (or a supervisor restart), NEVER on a
-// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
+// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the
+// `admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend
+// is reused across a hot reload; none can hot-swap, so they take effect on the next RESTART (or a
+// supervisor restart), NEVER on a
+// `POST /config/reload`: a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
 // rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
 // (no overlay); `note` names the affected fields instead. Everything else
-// (`rate_card`/`per_request_fee`/`security`/`advanced`/`metrics`/`health`/`routing`) is LIVE on the
-// swap; `limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):
+// (`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;
+// `limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):
 // `upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the
 // reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
 // once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
-// only `Arc<App>`, never the router) — two independent freezing mechanisms. `observability` is live
-// EXCEPT three boot-scoped fields: `emit_server_timing` (baked into router middleware state at
-// boot), `request_log_webhook_url` (seeds a process-global `OnceLock` that no-ops after the first
-// `main()` call), and `otlp_url` (feeds a one-shot `tracing_subscriber` init) — none rebuilt by an
-// apply.
+// only `Arc<App>`, never the router): two independent freezing mechanisms. There is NO
+// `observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config
+// grammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming
+// `observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry
+// egress is now `export:`, a NAMED MAP of exporter instances that this endpoint does not reach at
+// all: it is edited in `config.yaml` and made live by a plugin reload, not by `PUT /config/settings`.
+// Each `export:` entry is keyed by an operator-chosen instance name and carries a `module:` naming
+// the exporter plus a `settings:` bag that module validates, and MAY carry a `streams:`
+// subscription list. The built-in modules are `prometheus` (carries the `metrics` stream), `otlp`
+// (`traces`), and `request-log-webhook` + `request-log-file` (`logs`); subscribing an instance to a
+// stream its module does not carry is rejected rather than silently delivering nothing. An entry
+// MAY also carry a `fields:` projection, but do NOT plan on it in 1.5.3: it is parsed and enforced
+// yet unreachable with every built-in module, because each stream they carry has a pinned field
+// that has no producer yet, so any `fields:` on them is rejected. Omit it and receive the stream's
+// produced default set.
+// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
+// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
+// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
+// process-global `OnceLock`; neither is rebuilt by an apply.
 type ConfigSettingsView struct {
 	// Applied `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
 	Applied       bool   `json:"applied"`
@@ -255,21 +270,27 @@ type ConfigSettingsView struct {
 
 	// ReloadToApply Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
 	// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
-	// make them live — `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
+	// make them live; `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
 	// only live-swappable fields (or on a GET). The field NAME is frozen wire; only this description
 	// changed.
 	ReloadToApply *[]string `json:"reload_to_apply,omitempty"`
 
 	// Settings The current effective root-section overlay (only the fields the operator has set; base
-	// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection).
+	// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),
+	// REDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today
+	// `store.settings`, whose `url` is a credential in busbar's own docs) appears as
+	// `settings_keys`: sorted key names, no values. Same on the GET and on the PUT echo.
+	//
+	// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
+	// bag; the redaction applies to the bags nested INSIDE it.
 	Settings interface{} `json:"settings"`
 }
 
-// ConfigValidateView The result of `POST /api/v1/admin/config/validate` — a DRY-RUN: does a proposed config resolve +
+// ConfigValidateView The result of `POST /api/v1/admin/config/validate`, a DRY-RUN: does a proposed config resolve +
 // validate, WITHOUT applying anything. `ok` is the verdict; `errors` lists every structural/resolution
 // failure at once (empty when `ok`). A well-formed request always returns 200 with this view (a valid
 // request that describes an INVALID config is `ok: false`, not an HTTP error); only a MALFORMED request
-// body is an `invalid_request`. Env-var interpolation is out of scope — this checks structure and
+// body is an `invalid_request`. Env-var interpolation is out of scope; this checks structure and
 // cross-reference resolution, not runtime secret presence.
 type ConfigValidateView struct {
 	Errors []string `json:"errors"`
@@ -277,7 +298,7 @@ type ConfigValidateView struct {
 }
 
 // ConfigVersion One recorded config version: the metadata the versions LIST shows, plus the full hook-surface
-// snapshot rollback restores. Never contains a secret (hook definitions are operator config —
+// snapshot rollback restores. Never contains a secret (hook definitions are operator config:
 // transports, grants, deadlines).
 type ConfigVersion struct {
 	// Principal The acting principal (audit attribution, same handle as the audit log).
@@ -293,7 +314,7 @@ type ConfigVersion struct {
 	Version uint64 `json:"version"`
 }
 
-// ConfigVersionDetailView `GET /config/versions/{v}` — one retained config version WITH its full hook-surface snapshot
+// ConfigVersionDetailView `GET /config/versions/{v}`: one retained config version WITH its full hook-surface snapshot
 // (projected through the wire `HookView`, keyed by hook name) and the global wiring at that version.
 type ConfigVersionDetailView struct {
 	GlobalHooks []string            `json:"global_hooks"`
@@ -304,18 +325,18 @@ type ConfigVersionDetailView struct {
 	Version     uint64              `json:"version"`
 }
 
-// ConfigVersionPageView `GET /config/versions` — the cursor-paginated version-history envelope (`{items, next_cursor}`).
+// ConfigVersionPageView `GET /config/versions`: the cursor-paginated version-history envelope (`{items, next_cursor}`).
 type ConfigVersionPageView struct {
 	Items      []ConfigVersion `json:"items"`
 	NextCursor *string         `json:"next_cursor"`
 }
 
-// CreateKeyReq `POST /keys` body (1.5.0 signed-token keys, S1): PURE AUTH + a signed expiring token. A minted
+// CreateKeyReq `POST /keys` body (1.5.0 signed-token keys): PURE AUTH + a signed expiring token. A minted
 // key is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all
 // enforcement flows through the bound `group`. `#[serde(deny_unknown_fields)]` so the removed
 // 1.4.x fields (max_budget_cents/rpm_limit/tpm_limit/budget_period) fail loudly.
 type CreateKeyReq struct {
-	// AllowedPools Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools (C6).
+	// AllowedPools Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools.
 	AllowedPools *[]string `json:"allowed_pools,omitempty"`
 
 	// ExpiresAt Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.
@@ -328,8 +349,8 @@ type CreateKeyReq struct {
 
 	// Group The `groups:` bucket this key binds to (at most one). A key with NO group is authed +
 	// unlimited (access only). If the named group EXISTS, the key binds to it. If it does NOT
-	// exist, the mint 400s UNLESS `parent` is given — then it is AUTO-PROVISIONED as a leaf under
-	// `parent` (self-service D2; see `parent`).
+	// exist, the mint 400s UNLESS `parent` is given, in which case it is AUTO-PROVISIONED as a leaf under
+	// `parent` (self-service; see `parent`).
 	Group *string `json:"group,omitempty"`
 
 	// IssueAwsCredential When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible
@@ -342,16 +363,16 @@ type CreateKeyReq struct {
 	Name   string             `json:"name"`
 
 	// Parent AUTO-PROVISION target: the EXISTING parent group under which to create
-	// `group` as a leaf when `group` does not yet exist — the first-self-mint materialization of a
+	// `group` as a leaf when `group` does not yet exist: the first-self-mint materialization of a
 	// `user:<sub>` personal budget bucket. The new leaf's limits come from the nearest-ancestor
 	// `child_default` template (inherit-only when none up the chain), created through the same
 	// validate-at-the-door path as `POST /groups`. If `group` ALREADY exists, `parent` must equal
-	// its actual parent (else 409) — a mint never re-homes an existing group. Ignored when `group`
+	// its actual parent (else 409); a mint never re-homes an existing group. Ignored when `group`
 	// is absent (a key with no group has nothing to provision).
 	Parent *string `json:"parent,omitempty"`
 }
 
-// CreatedKeyView `POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
+// CreatedKeyView `POST /keys` (mint): the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
 // credential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a
 // bearer-only mint.
 type CreatedKeyView struct {
@@ -360,7 +381,7 @@ type CreatedKeyView struct {
 	// AwsAccessKeyId AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.
 	AwsAccessKeyId *string `json:"aws_access_key_id,omitempty"`
 
-	// AwsSecretAccessKey AWS SigV4 secret access key — shown once (present only with an AWS credential).
+	// AwsSecretAccessKey AWS SigV4 secret access key, shown once (present only with an AWS credential).
 	AwsSecretAccessKey *string `json:"aws_secret_access_key,omitempty"`
 	CreatedAt          uint64  `json:"created_at"`
 	Enabled            bool    `json:"enabled"`
@@ -369,42 +390,45 @@ type CreatedKeyView struct {
 	ExpiresAt uint64  `json:"expires_at"`
 	Group     *string `json:"group"`
 
-	// GroupProvisioned Whether this mint AUTO-PROVISIONED its bound group leaf (self-service D2) — lets a portal
+	// GroupProvisioned Whether this mint AUTO-PROVISIONED its bound group leaf (self-service); lets a portal
 	// distinguish "bound to an existing bucket" from "created your personal bucket + bound".
 	GroupProvisioned bool              `json:"group_provisioned"`
 	Id               string            `json:"id"`
 	Labels           map[string]string `json:"labels"`
 	Name             string            `json:"name"`
 
-	// State E-007: same field as `KeyView.state` — a fresh mint is always `"active"` (enabled, not
+	// State Same field as `KeyView.state`; a fresh mint is always `"active"` (enabled, not
 	// revoked, not deleted).
 	State string `json:"state"`
 
-	// Token The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never
+	// Token The busbar-SIGNED token: the key credential (1.5.0), shown EXACTLY once and never
 	// returned by any read. (This is the field a client must capture to authenticate.)
 	Token string `json:"token"`
 }
 
-// EffectiveConfigView The EFFECTIVE config snapshot (`GET /api/v1/admin/config`) — the running configuration as busbar
+// EffectiveConfigView The EFFECTIVE config snapshot (`GET /api/v1/admin/config`): the running configuration as busbar
 // resolved it, for drift detection (compare against your desired config) and one-shot inspection.
 // Composed from the same REDACTED reads as the individual endpoints (auth chain names, pool/model/
-// provider topology, hook definitions, global-hook wiring) — so it carries NO secret: no client
+// provider topology, hook definitions, global-hook wiring), so it carries NO secret: no client
 // tokens, no provider keys, no hook payloads. Additive-only; the source-layer annotation (base vs
 // overlay) lands with the config overlay substrate.
 type EffectiveConfigView struct {
 	// Auth The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
-	// callers + the upstream-credential mode. Never a secret — module names and the mode are config
+	// callers + the upstream-credential mode. Never a secret: module names and the mode are config
 	// identifiers, not credentials. An empty `chain` is the open front door (admits every request).
 	Auth AuthView `json:"auth"`
 
-	// GlobalHooks Names fired on every request (`global_hooks:` + any inline `global: true`).
+	// GlobalHooks Names fired on EVERY request: the hooks attached at the reserved all-pools key `pools.hooks:`
+	// in `config.yaml` (the 1.5.3 replacement for the DELETED `global_hooks:` key; that key no
+	// longer parses), plus any hook this API declares with `global: true`. The response FIELD name
+	// stays `global_hooks`; only the config-file spelling changed.
 	GlobalHooks []string       `json:"global_hooks"`
 	Hooks       []HookView     `json:"hooks"`
 	Models      []ModelView    `json:"models"`
 	Pools       []PoolView     `json:"pools"`
 	Providers   []ProviderView `json:"providers"`
 
-	// Version The monotonic config version at the time of this read (see `InfoView.config_version`) — so a
+	// Version The monotonic config version at the time of this read (see `InfoView.config_version`), so a
 	// drift-detection read gets the config AND its version in one call.
 	Version uint64 `json:"version"`
 }
@@ -455,7 +479,7 @@ type GroupBucketUsageView struct {
 	Window string `json:"window"`
 }
 
-// GroupUsageView `GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per
+// GroupUsageView `GET /groups/{name}/usage`: one group's DERIVED current-window usage, one row per
 // enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
 // caps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
 // ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
@@ -465,7 +489,7 @@ type GroupUsageView struct {
 	AsOf uint64 `json:"as_of"`
 
 	// Buckets One row per enforcement bucket, in the group's resolved bucket order. Empty for a group
-	// with only a `concurrent` limit (or none) — there is no windowed ledger to read.
+	// with only a `concurrent` limit (or none); there is no windowed ledger to read.
 	Buckets []GroupBucketUsageView `json:"buckets"`
 
 	// Enabled `false` = the group is FROZEN (`enabled: false`): every request through it rejects.
@@ -476,7 +500,7 @@ type GroupUsageView struct {
 }
 
 // GroupView A group definition in the registry read (`GET /api/v1/admin/groups`,
-// `GET /api/v1/admin/groups/{name}`) — the limit-tree read surface. Projects the `groups:` config
+// `GET /api/v1/admin/groups/{name}`): the limit-tree read surface. Projects the `groups:` config
 // entry faithfully (parent chain, enabled freeze flag, the ordered limits, the `child_default`
 // budget template for auto-provisioned children), never a secret. This is the READ shape; the
 // WRITE verbs accept a `GroupCfg` verbatim (paste a config.yaml group block). Additive-only.
@@ -498,14 +522,15 @@ type GroupView struct {
 }
 
 // HookDesiredStatus The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
-// and their version.
+// (KEY NAMES only, see [`super::HookView::settings_keys`]) and their version.
 type HookDesiredStatus struct {
-	Settings        map[string]interface{} `json:"settings"`
-	SettingsVersion uint64                 `json:"settings_version"`
+	// SettingsKeys Sorted KEY NAMES of the desired settings bag, never its values.
+	SettingsKeys    []string `json:"settings_keys"`
+	SettingsVersion uint64   `json:"settings_version"`
 }
 
 // HookHealthView The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). Checks
-// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry —
+// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry;
 // this is a plugin-LOAD status check, not a network reachability probe: it never opens a
 // connection, and it cannot tell you whether a `kind: hook` plugin's own configured external
 // endpoint (e.g. `busbar-webrequest-hook`'s `settings.url`) is actually reachable, only that the
@@ -517,24 +542,30 @@ type HookHealthView struct {
 	Name   string  `json:"name"`
 
 	// Reachable `Some(true)` = resolves to a loaded `kind: hook` plugin; `Some(false)` = it does not
-	// (wrong kind, or not installed/loaded) — always `Some`, never `None`, as of 1.5.0's
+	// (wrong kind, or not installed/loaded), always `Some`, never `None`, as of 1.5.0's
 	// in-process plugin model.
 	Reachable *bool `json:"reachable"`
 
 	// Transport The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
 	// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
-	// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+	// socket path or URL); the retired 1.4.x socket/webhook sidecar transports are gone.
 	Transport HookTransportView `json:"transport"`
 }
 
 // HookReportedStatus The REPORTED settings side of `hooks/{name}/status`: what the hook says it is actually running
 // (present only when the hook answered `status`).
+//
+// KEY NAMES only, and for a sharper reason than the desired side: the reported bag is the hook's
+// ECHO of the SECRET-RESOLVED settings busbar pushed it, i.e. the PLAINTEXT of every `SecretRef`,
+// and this read is reachable at READ-ONLY admin scope. `null` when the hook answered `status` but
+// reported no settings.
 type HookReportedStatus struct {
-	Settings        *map[string]interface{} `json:"settings"`
-	SettingsVersion *uint64                 `json:"settings_version"`
+	// SettingsKeys Sorted KEY NAMES of the observed settings bag, never its values.
+	SettingsKeys    *[]string `json:"settings_keys"`
+	SettingsVersion *uint64   `json:"settings_version"`
 }
 
-// HookSchemaView `GET /hooks/{name}/schema` — the hook's self-described settings JSON Schema (proxied over the
+// HookSchemaView `GET /hooks/{name}/schema`: the hook's self-described settings JSON Schema (proxied over the
 // `describe` wire message), or `null` when the hook/transport does not answer.
 type HookSchemaView struct {
 	Name string `json:"name"`
@@ -543,28 +574,33 @@ type HookSchemaView struct {
 	Schema interface{} `json:"schema"`
 }
 
-// HookStatusView `GET /hooks/{name}/status` — the hook's OBSERVED state: desired vs reported settings with a
+// HookStatusView `GET /hooks/{name}/status`, the hook's OBSERVED state: desired vs reported settings with a
 // `drift` verdict, plus the hook's self-reported metrics. `reported`/`drift` are `null` and `note`
 // is present when the hook did not answer (fail-open); `metrics` is invariantly an array.
 type HookStatusView struct {
 	AsOf uint64 `json:"as_of"`
 
 	// Desired The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
-	// and their version.
+	// (KEY NAMES only, see [`super::HookView::settings_keys`]) and their version.
 	Desired HookDesiredStatus `json:"desired"`
 	Drift   *bool             `json:"drift"`
+
+	// DriftKeys The DESIRED settings KEY NAMES the hook is not actually running: the actionable half of
+	// `drift`, carrying names this body already serves and no value from either bag. Invariantly an
+	// array (empty on the no-answer branch, where no drift is known).
+	DriftKeys []string `json:"drift_keys"`
 
 	// Metrics Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when
 	// the hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/
 	// `label`/`unit`/`viz`/`max` members.
 	//
-	// E-004 (busbar-ui/docs/ENGINE-BUGS.md): schemars' blanket `JsonSchema` impl for
+	// schemars' blanket `JsonSchema` impl for
 	// `serde_json::Value` renders as the JSON-Schema-2020-12 boolean `true` (`schemars-1.2.1`'s
-	// `json_schema_impls/serdejson.rs`), which is legal 2020-12 but — nested here as this array's
-	// `items` — is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which
+	// `json_schema_impls/serdejson.rs`), which is legal 2020-12 but, nested here as this array's
+	// `items`, is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which
 	// every published SDK generates through) cannot represent one at all: the parse aborts, taking
 	// out Python/TS/Go SDK regeneration simultaneously. `#[schemars(schema_with)]` overrides just
-	// this field's schema to `{"type": "array", "items": {}}` — `{}` is the equivalent "accepts
+	// this field's schema to `{"type": "array", "items": {}}`; `{}` is the equivalent "accepts
 	// anything" schema every generator DOES understand, and is what busbar-ui's own
 	// `openapi-prep.py` already rewrites `items: true` into client-side. This is the only
 	// `items: true` in the document; every other `additionalProperties: true` schemars emits
@@ -582,7 +618,7 @@ type HookStatusView struct {
 
 // HookTransportView The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
 // transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
-// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+// socket path or URL); the retired 1.4.x socket/webhook sidecar transports are gone.
 type HookTransportView struct {
 	// Kind `"plugin"` for a signed dlopen'd hook plugin, or `"none"` for a hook with no plugin
 	// transport (compiled-in kinds, or a misconfigured entry).
@@ -592,12 +628,19 @@ type HookTransportView struct {
 	Target *string `json:"target"`
 }
 
-// HookView A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the
+// HookView A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the
 // plugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a
-// secret. `global` reports whether the hook fires on every request (named in `global_hooks:` or
-// declared `global: true`). Live connection status (`health`) is a separate endpoint. Additive-only.
+// secret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see
+// [`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is
+// no `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the
+// top-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and
+// ATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it
+// global, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection
+// axes (which callers, which pipeline stages). On THIS API the same hook is written with
+// `global: true`; the wire and the config file are deliberately different surfaces. Live connection
+// status (`health`) is a separate endpoint. Additive-only.
 type HookView struct {
-	// At TAP observation stage (`"request"`/`"route"`/`"attempt"`/`"completion"`), or `None` for a gate.
+	// At TAP observation stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or `None` for a gate.
 	At *string `json:"at"`
 
 	// Global Whether this hook fires on every request (globally wired).
@@ -607,7 +650,7 @@ type HookView struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
 
-	// OnError Gate fallback on timeout/error — a CLOSED, unambiguous string union (audit #8): one of the
+	// OnError Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the
 	// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
 	// fallback hook the chain continues through. Unambiguous by construction: the terminal words
 	// are ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in
@@ -620,16 +663,24 @@ type HookView struct {
 	// Prompt Prompt access grant: `"no"` | `"ro"` | `"rw"`.
 	Prompt string `json:"prompt"`
 
-	// Settings The hook's opaque settings map (operator/API-owned; pushed via the configure wire). Never
-	// interpreted by busbar; never a secret by contract (hook settings are operator config).
-	Settings map[string]interface{} `json:"settings"`
+	// SettingsKeys The KEY NAMES of the hook's opaque settings bag, sorted, WITHOUT their values, the same
+	// redacted projection [`NamedDefView::settings_keys`] carries, produced by the same helper.
+	//
+	// This used to be the bag itself, under a doc comment claiming hook settings are "never a
+	// secret by contract". That claim was retracted for `NamedDefView` and it is no more true here:
+	// a hook's settings bag is a `SecretRef` carrier by design (`hooks::HookEnv::resolve_hook_settings`
+	// resolves it before every configure push), and `config::secret::resolve_settings` forwards a
+	// non-object bag verbatim, so a literal credential is fully supported too. `GET /hooks` and
+	// `GET /hooks/{name}` serve this at READ-ONLY admin scope. The values are readable only where
+	// they are writable: the config file and the config overlay.
+	SettingsKeys []string `json:"settings_keys"`
 
 	// TimeoutMs Gate decision deadline in milliseconds.
 	TimeoutMs uint64 `json:"timeout_ms"`
 
 	// Transport The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
 	// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
-	// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+	// socket path or URL); the retired 1.4.x socket/webhook sidecar transports are gone.
 	Transport HookTransportView `json:"transport"`
 
 	// User Caller-identity access grant: `"no"` | `"ro"`.
@@ -644,18 +695,19 @@ type InfoView struct {
 	// Build The compiled-in feature proof (`InfoView.build`).
 	Build BuildInfo `json:"build"`
 
-	// ConfigPersistence Whether config-overlay persistence is enabled (`BUSBAR_CONFIG_OVERLAY` set): `true` = API-applied
-	// config changes are durable across restarts; `false` = live-only (lost on restart). Lets tooling
-	// tell an operator whether their runtime changes will survive a restart.
+	// ConfigPersistence Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
+	// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
+	// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
+	// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
 	ConfigPersistence bool `json:"config_persistence"`
 
-	// ConfigVersion Monotonic config version — `0` at boot, +1 per API config apply. Drift-detection: re-read and
+	// ConfigVersion Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
 	// compare to tell whether the running config changed. Process-local (resets on restart).
 	ConfigVersion uint64 `json:"config_version"`
 
-	// StartedAt Epoch seconds of process start — the BOOT EPOCH marker: `config_version` (and any
+	// StartedAt Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any
 	// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
-	// to read a counter reset as "new epoch", never as "reverted" (audit minor #2 / #4).
+	// to read a counter reset as "new epoch", never as "reverted".
 	StartedAt *uint64 `json:"started_at"`
 
 	// Topology Pool/model/provider counts (`InfoView.topology`).
@@ -668,20 +720,20 @@ type InfoView struct {
 	Version string `json:"version"`
 }
 
-// InspectPluginReq `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] (question
-// #7 — "same request body shape as `POST /plugins`") — `file` is accepted for shape parity with
-// the install flow a UI composes around the same upload, but is otherwise UNUSED here: inspect
-// never writes anything to disk, so there is no filename to bind an install would need.
+// InspectPluginReq `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`]; `file`
+// is accepted for shape parity with the install flow a UI composes around the same upload, but is
+// otherwise UNUSED here: inspect never writes anything to disk, so there is no filename to bind
+// an install would need.
 type InspectPluginReq struct {
 	File       string `json:"file"`
 	TarballB64 string `json:"tarball_b64"`
 }
 
 // InstallPluginReq The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
-// bytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a
+// bytes ride as base64 (`tarball_b64`): a plugin artifact is opaque binary, so base64 keeps it a
 // clean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the
 // running `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`
-// filename to store it under (storage only — identity comes from the signed manifest inside).
+// filename to store it under (storage only; identity comes from the signed manifest inside).
 type InstallPluginReq struct {
 	File       string `json:"file"`
 	TarballB64 string `json:"tarball_b64"`
@@ -708,7 +760,7 @@ type KeyMeteringView struct {
 	WindowStart uint64 `json:"window_start"`
 }
 
-// KeyPageView `GET /keys` — the cursor-paginated key list envelope (`{items, next_cursor}`, hand-rolled in the
+// KeyPageView `GET /keys`: the cursor-paginated key list envelope (`{items, next_cursor}`, hand-rolled in the
 // keys handler rather than via `Page<T>`).
 type KeyPageView struct {
 	Items      []KeyView `json:"items"`
@@ -720,7 +772,7 @@ type KeyUsageView struct {
 	Id string `json:"id"`
 
 	// Name The key's display name; `None` when the key was deleted after metering accumulated (history
-	// outlives the key — the id still attributes it).
+	// outlives the key; the id still attributes it).
 	Name     *string `json:"name"`
 	Requests uint64  `json:"requests"`
 
@@ -739,9 +791,9 @@ type KeyUsageView struct {
 	TokensOutput uint64 `json:"tokens_output"`
 }
 
-// KeyView Virtual-key metadata — the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
+// KeyView Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 // and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
-// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools (C6); `group` names the
+// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools; `group` names the
 // bound `groups:` entry (`null` = unlimited).
 type KeyView struct {
 	AllowedPools *[]string         `json:"allowed_pools"`
@@ -752,15 +804,15 @@ type KeyView struct {
 	Labels       map[string]string `json:"labels"`
 	Name         string            `json:"name"`
 
-	// State E-007: `enabled` alone cannot distinguish a reversible pause from either of the two permanent
-	// dispositions — `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
+	// State `enabled` alone cannot distinguish a reversible pause from either of the two permanent
+	// dispositions. `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
 	// used to leave `enabled: false` with nothing else to tell them apart. One of exactly four
 	// values, additive and derived (never independently settable):
-	// - `"active"` — enabled, not revoked, not deleted.
-	// - `"disabled"` — `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
-	// - `"revoked"` — `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
+	// - `"active"`: enabled, not revoked, not deleted.
+	// - `"disabled"`: `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
+	// - `"revoked"`: `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
 	//   `GET /keys/{id}`) stays live for audit/usage attribution.
-	// - `"tombstoned"` — `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
+	// - `"tombstoned"`: `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
 	//   kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain
 	//   `GET /keys` by default; visible there with `?include=tombstoned`.
 	State string `json:"state"`
@@ -820,7 +872,68 @@ type ModelView struct {
 	Provider string `json:"provider"`
 }
 
-// OverlayResetView `DELETE /overlay/{section}` — per-section overlay reset result: the section reverted, the
+// NamedDefView ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD
+// (`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and
+// `tools:`/`agents:` when they land).
+//
+// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
+// `{module, settings}` spine and differ only by optional kind-specific fields, which are
+// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
+// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,
+// and a new section adds fields here (additive) instead of a parallel view + a parallel handler.
+//
+// SECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,
+// which is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET
+// REFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator
+// legitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),
+// so projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets
+// through `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps
+// the introspection the read surface exists for ("what is configured here?") with no field a value
+// could ride out on: the same discipline `token_configured` already applies to the reference.
+type NamedDefView struct {
+	// BrowserLoginConfigured `identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that
+	// puts a button on the hosted login page.
+	BrowserLoginConfigured *bool `json:"browser_login_configured,omitempty"`
+
+	// MaxAdminScope `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
+	// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
+	// for a section that carries no ceiling.
+	MaxAdminScope *string `json:"max_admin_scope,omitempty"`
+
+	// Module The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
+	Module string `json:"module"`
+
+	// Name The instance NAME: the map key, and the token every reference site uses.
+	Name string `json:"name"`
+
+	// SettingsKeys The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
+	// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
+	// never a place a VALUE can leak from: a settings value may be a credential (see the type doc),
+	// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
+	// values are readable only where they are writable: the config file and the config overlay.
+	SettingsKeys []string `json:"settings_keys"`
+
+	// TokenConfigured `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
+	// `admin-tokens` operator credential). The reference itself is never projected.
+	TokenConfigured *bool `json:"token_configured,omitempty"`
+
+	// Unparseable Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
+	// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
+	// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is
+	// NOT live: `module`/`settings_keys` are the raw stored document's best-effort projection, not
+	// a resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot
+	// log line. Absent (and omitted from the body) for every live definition.
+	Unparseable *string `json:"unparseable,omitempty"`
+}
+
+// NamedSettingsReq The `PATCH /api/v1/admin/<section>/{name}/settings` body: the whole replacement settings bag.
+// A sibling of the hooks surface's `PatchSettingsReq` (same shape, same semantics: `settings:` is
+// REPLACED, not deep-merged, so the stored bag is always exactly what the caller sent).
+type NamedSettingsReq struct {
+	Settings map[string]interface{} `json:"settings"`
+}
+
+// OverlayResetView `DELETE /overlay/{section}`, per-section overlay reset result: the section reverted, the
 // resulting config version, and whether anything changed (`false` = the section had no overlay state,
 // an idempotent no-op).
 type OverlayResetView struct {
@@ -853,6 +966,13 @@ type PageModelView struct {
 	NextCursor *string     `json:"next_cursor"`
 }
 
+// PageNamedDefView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+// Generic over the item view so every list endpoint shares one shape.
+type PageNamedDefView struct {
+	Items      []NamedDefView `json:"items"`
+	NextCursor *string        `json:"next_cursor"`
+}
+
 // PagePluginView A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
 // Generic over the item view so every list endpoint shares one shape.
 type PagePluginView struct {
@@ -874,7 +994,7 @@ type PageProviderView struct {
 	NextCursor *string        `json:"next_cursor"`
 }
 
-// PatchSettingsReq The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match` (H3).
+// PatchSettingsReq The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match`.
 type PatchSettingsReq struct {
 	Settings map[string]interface{} `json:"settings"`
 }
@@ -882,7 +1002,7 @@ type PatchSettingsReq struct {
 // PluginInstallView The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The
 // engine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never
 // trusted), validated the ABI handshake, and atomically wrote the library (+ its manifest sidecar)
-// into the plugins directory. `active` takes effect on the next store (re)load — a store change
+// into the plugins directory. `active` takes effect on the next store (re)load; a store change
 // applies on restart / `store.module` apply, not as a hot swap (design: store install is
 // boot-time/config-apply). Additive-only; never a secret.
 type PluginInstallView struct {
@@ -930,7 +1050,7 @@ type PluginRollbackReq struct {
 // PluginRollbackView The result of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`, 1.5.0
 // rollback-friendly versioning): the operator deliberately pinned a plugin DOWN to a prior version and
 // the engine hot-swapped to that artifact. The pin is persisted (survives restart) and the trust
-// floor was lowered to EXACTLY the pinned version for THIS plugin — a lower artifact still cannot
+// floor was lowered to EXACTLY the pinned version for THIS plugin; a lower artifact still cannot
 // load, and an automatic/silent replay of an old artifact is still refused (only this explicit,
 // audited action lowered the floor). Additive-only; never a secret.
 type PluginRollbackView struct {
@@ -953,10 +1073,10 @@ type PluginRollbackView struct {
 	Version string `json:"version"`
 }
 
-// PluginSchemaView `GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]
-// (plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of
+// PluginSchemaView `GET /plugins/{name}/schema`: the generalized, all-kinds sibling of [`HookSchemaView`].
+// Carries `trust`/`source`/`schema_error` on top of
 // `{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest
-// precedence rule from context — the server always picks exactly one source and reports which.
+// precedence rule from context; the server always picks exactly one source and reports which.
 type PluginSchemaView struct {
 	// Kind The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`
 	// and `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a
@@ -969,26 +1089,25 @@ type PluginSchemaView struct {
 	// only when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.
 	RestartRequiredDefault *bool `json:"restart_required_default,omitempty"`
 
-	// Schema The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never
+	// Schema The plugin's settings JSON Schema verbatim, or `null`, either because the manifest never
 	// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
 	// failed to parse.
 	Schema interface{} `json:"schema"`
 
-	// SchemaError Set only when the manifest's `settings_schema` was present but failed to parse as JSON —
+	// SchemaError Set only when the manifest's `settings_schema` was present but failed to parse as JSON;
 	// `null` for a manifest that genuinely never set the field. Never collapsed into a bare
-	// `schema: null` (question #3, round-4 correction): a present-but-corrupt schema is a real
+	// `schema: null`: a present-but-corrupt schema is a real
 	// authoring/packaging bug, not "this plugin simply has none."
 	SchemaError *string `json:"schema_error"`
 
 	// Source `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
 	// message (the existing describe-proxy behavior, unchanged); `"manifest"` otherwise. Lets
 	// busbar-ui explain "why does this form look different from what I expected" without
-	// implementing the describe/manifest precedence rule itself (question #3, round-4
-	// correction).
+	// implementing the describe/manifest precedence rule itself.
 	Source string `json:"source"`
 
-	// Trust `"trusted" | "unverified" | "rejected"` — the same vocabulary the plugin catalog already
-	// uses (never `"verified"`; question #8, round-4 correction).
+	// Trust `"trusted" | "unverified" | "rejected"`: the same vocabulary the plugin catalog already
+	// uses (never `"verified"`).
 	Trust string `json:"trust"`
 
 	// Version The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which
@@ -999,9 +1118,9 @@ type PluginSchemaView struct {
 }
 
 // PluginView One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
-// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)
+// COMPILED-IN (baked into the binary, feature-gated, provably removable via `--no-default-features`)
 // or a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed
-// plugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
+// plugin ABI; this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
 // retired 1.4.x socket/webhook "external" transport is gone). `active` is `Some(true/false)`
 // where activation is tracked (auth modules: in the chain?; hook plugins: configured = true;
 // dynamic store: the configured `store.module`) and `None` where it is a per-pool concern not
@@ -1011,11 +1130,11 @@ type PluginView struct {
 	// at this level.
 	Active *bool `json:"active"`
 
-	// Error Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.
+	// Error Why a dynamic-library plugin did not validate (`valid: false`): a short, secret-free reason.
 	Error *string `json:"error,omitempty"`
 
-	// File The artifact FILENAME in `plugins.dir` — the `{file}` path segment `DELETE
-	// /plugins/{file}` and `GET /plugins/{file}/schema` key off (E-003: a list row previously
+	// File The artifact FILENAME in `plugins.dir`: the `{file}` path segment `DELETE
+	// /plugins/{file}` and `GET /plugins/{file}/schema` key off (a list row previously
 	// carried no field a client could feed straight back into either sibling endpoint; `target`
 	// is documented as the manifest NAME, not necessarily the on-disk filename, and is not a
 	// reliable substitute). `None` for compiled-in/external rows, which have no backing artifact
@@ -1023,9 +1142,9 @@ type PluginView struct {
 	File *string `json:"file,omitempty"`
 
 	// HasSchema `true` iff `GET /plugins/{file}/schema` would resolve this row's `file` to a manifest that
-	// declares `settings_schema` at all — i.e. iff `schema_url` below is non-null — so a plugin
-	// catalog can render which rows are configurable in one list call instead of a fetch per row
-	// (E-003). Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
+	// declares `settings_schema` at all, i.e. iff `schema_url` below is non-null, so a plugin
+	// catalog can render which rows are configurable in one list call instead of a fetch per row.
+	// Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
 	// caller to null-check `schema_url` for the same fact. `false` for compiled-in/external rows
 	// (no manifest to carry a schema) and for a dynamic-library row whose manifest never set
 	// `settings_schema`. Additive.
@@ -1035,7 +1154,7 @@ type PluginView struct {
 	// manifest). Operator-facing name for the "ABI" the engine speaks.
 	InterfaceVersion *uint32 `json:"interface_version,omitempty"`
 
-	// Loader `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin — auth, hook, and store
+	// Loader `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin: auth, hook, and store
 	// kinds alike as of 1.5.0's signed plugin ABI).
 	Loader string `json:"loader"`
 	Name   string `json:"name"`
@@ -1043,35 +1162,35 @@ type PluginView struct {
 	// Publisher The manifest's declared publisher (dynamic-library plugins with a manifest).
 	Publisher *string `json:"publisher,omitempty"`
 
-	// SchemaError A manifest that SET `settings_schema` but whose value fails to parse (question #3's round-4
-	// correction, carried onto the list row too) — distinct from a manifest that never set the
+	// SchemaError A manifest that SET `settings_schema` but whose value fails to parse (carried onto the
+	// list row too), distinct from a manifest that never set the
 	// field at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in
 	// this case; the operator sees the row is degraded from the list alone, before ever following
 	// the URL.
 	SchemaError *string `json:"schema_error,omitempty"`
 
-	// SchemaUrl Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint (questions
-	// #10/#11 of plugin-settings-schema-SPEC.md) — ALWAYS a relative path under the admin origin
+	// SchemaUrl Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint: ALWAYS a
+	// relative path under the admin origin
 	// (the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint
 	// only ever emits the admin-prefixed relative form, never anything else). Non-null whenever the
 	// manifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then
-	// surfaces `schema_error` — question #11, round-8 correction: a present-but-corrupt schema is a
-	// worse, distinct condition from "no schema declared", never folded into the same `null`).
+	// surfaces `schema_error`: a present-but-corrupt schema is a worse, distinct
+	// condition from "no schema declared", never folded into the same `null`).
 	// `null` for a compiled-in/external row (no manifest to carry a schema at all) and for any
 	// dynamic-library row whose manifest never set `settings_schema`.
 	SchemaUrl *string `json:"schema_url,omitempty"`
 
-	// Target For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x
+	// Target For a dynamic-library plugin, its NAME (not a socket path or URL, the retired 1.4.x
 	// transport target). `None` for compiled-in.
 	Target *string `json:"target"`
 
 	// Trust The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running
 	// `plugins.trust` posture: `"trusted"` (signed by an allowlisted publisher), `"unverified"`
-	// (loaded but not verified — the posture permits it), or `"rejected"` (the `halt` posture would
+	// (loaded but not verified, the posture permits it), or `"rejected"` (the `halt` posture would
 	// refuse it). `None` for compiled-in/external.
 	Trust *string `json:"trust,omitempty"`
 
-	// Type `"auth"`, `"hooks"`, or `"store"` — the plugin TYPE (each a distinct engine contract).
+	// Type `"auth"`, `"hooks"`, or `"store"`: the plugin TYPE (each a distinct engine contract).
 	Type string `json:"type"`
 
 	// Valid For a dynamic-library plugin: whether the library validated as a busbar store plugin the engine
@@ -1083,7 +1202,7 @@ type PluginView struct {
 	Version *string `json:"version,omitempty"`
 }
 
-// PoolDetailView The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard
+// PoolDetailView The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`), the reliability/capacity dashboard
 // data: each member's breaker state, concurrency headroom, in-flight
 // count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
 // ranks on. No LLM content, no credentials.
@@ -1094,13 +1213,13 @@ type PoolDetailView struct {
 
 // PoolMemberStatusView One member's live status within a pool. The breaker signal is the release-exposed
 // `usable`/`cooldown_remaining_seconds` pair (a lane in breaker cooldown reports `usable: false` with the
-// seconds remaining) — the same summary `/stats` surfaces.
+// seconds remaining), the same summary `/stats` surfaces.
 type PoolMemberStatusView struct {
 	// AvailableConcurrency Free concurrency slots on this lane right now (lane-global; permits are shared across pools).
 	AvailableConcurrency uint `json:"available_concurrency"`
 
 	// CooldownRemainingSeconds Seconds until a tripped breaker's cooldown elapses; `0` when not cooling down. (`_seconds`
-	// suffix — the one unit-suffix spelling across the surface, like `uptime_seconds`.)
+	// suffix: the one unit-suffix spelling across the surface, like `uptime_seconds`.)
 	CooldownRemainingSeconds uint64 `json:"cooldown_remaining_seconds"`
 
 	// Dead Whether the lane is hard-down/dead (distinct from a transiently-tripped breaker).
@@ -1121,8 +1240,8 @@ type PoolMemberStatusView struct {
 	Ok uint64 `json:"ok"`
 
 	// TripCount MONOTONIC count of Closed→Open breaker trips on this lane. Breaker episodes are transient
-	// and can open+close entirely between two polls — a consumer alerting on trips diffs this
-	// count instead of trying to catch the live edge (audit #5). Carried across config apply and
+	// and can open+close entirely between two polls, so a consumer alerting on trips diffs this
+	// count instead of trying to catch the live edge. Carried across config apply and
 	// restart with the rest of the learned health.
 	TripCount uint64 `json:"trip_count"`
 
@@ -1140,7 +1259,7 @@ type PoolMemberView struct {
 
 // PoolView A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
 // models and their weights. LIVE per-member status (breaker state, available concurrency, latency
-// EWMA, budget/rate headroom — design-admin-api-v1) is an additive follow-up; the field set
+// EWMA, budget/rate headroom) is an additive follow-up; the field set
 // only grows.
 type PoolView struct {
 	Members []PoolMemberView `json:"members"`
@@ -1168,7 +1287,7 @@ type RestartReq struct {
 	Confirm *bool `json:"confirm,omitempty"`
 }
 
-// RestartView `POST /restart` — accepted-and-draining result.
+// RestartView `POST /restart`: accepted-and-draining result.
 type RestartView struct {
 	Note       string `json:"note"`
 	Restarting bool   `json:"restarting"`
@@ -1177,19 +1296,19 @@ type RestartView struct {
 	SupervisorDetected bool `json:"supervisor_detected"`
 }
 
-// RevokeView `POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.
+// RevokeView `POST /keys/{id}/revoke`: the revoked key's id (denylisted without deleting the binding). 1.5.0.
 type RevokeView struct {
 	// Revoked The id that was revoked (durably denylisted; the binding record remains).
 	Revoked string `json:"revoked"`
 }
 
-// RollbackReq The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match` (H3).
+// RollbackReq The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match`.
 type RollbackReq struct {
 	// Version The retained version to restore.
 	Version uint64 `json:"version"`
 }
 
-// RotatedKeyView `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
+// RotatedKeyView `POST /keys/{id}/rotate`: the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
 // `token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every
 // prior token now rejected) or `secret` (a legacy hashed-secret key) is present.
 type RotatedKeyView struct {
@@ -1204,20 +1323,20 @@ type RotatedKeyView struct {
 	Labels    map[string]string `json:"labels"`
 	Name      string            `json:"name"`
 
-	// Secret The fresh bearer secret — shown EXACTLY once (legacy hashed-secret keys only).
+	// Secret The fresh bearer secret, shown EXACTLY once (legacy hashed-secret keys only).
 	Secret *string `json:"secret,omitempty"`
 
-	// State E-007: same field as `KeyView.state` — rotate does not change `enabled`/revoked/tombstoned
+	// State Same field as `KeyView.state`; rotate does not change `enabled`/revoked/tombstoned
 	// status, so this reflects whatever the key's disposition already was (rotating a `disabled` or
 	// `revoked` key is legal and leaves it exactly that; only a `tombstoned` key refuses to rotate,
 	// which surfaces as 404 instead of this response).
 	State string `json:"state"`
 
-	// Token The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).
+	// Token The fresh busbar-SIGNED token, shown EXACTLY once (signed-token keys).
 	Token *string `json:"token,omitempty"`
 }
 
-// SigningKeyRotateView `POST /signing-key/rotate` — the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
+// SigningKeyRotateView `POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
 // single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
 type SigningKeyRotateView struct {
 	// CurrentKid The current signing-key id (`kid`) that tokens are minted under.
@@ -1237,7 +1356,7 @@ type TopologyInfo struct {
 	Providers uint `json:"providers"`
 }
 
-// UpdateKeyReq Partial update to an existing key. Keys are PURE AUTH (1.5.0, S1), so the mutable surface is
+// UpdateKeyReq Partial update to an existing key. Keys are PURE AUTH (1.5.0), so the mutable surface is
 // auth-shaped only. Every field is optional; only the present ones change. The credential, name,
 // allowed-pools, and labels are immutable here (rotate/recreate for those).
 //
@@ -1257,7 +1376,7 @@ type UpdateKeyReq struct {
 	Group *string `json:"group,omitempty"`
 }
 
-// UsageBreakdown The raw consumption counts + the derived spend estimate — the one shape shared by `total`,
+// UsageBreakdown The raw consumption counts + the derived spend estimate: the one shape shared by `total`,
 // `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
 type UsageBreakdown struct {
 	Requests uint64 `json:"requests"`
@@ -1283,26 +1402,26 @@ type UsageView struct {
 	AsOf uint64 `json:"as_of"`
 
 	// ByKey Per-key aggregation (same raw-split shape). CAPPED at the top 1000 rows by spend (the
-	// FinOps-relevant ordering); `by_key_truncated` says the cap fired — never a silent cut.
+	// FinOps-relevant ordering); `by_key_truncated` says the cap fired, never a silent cut.
 	ByKey []KeyUsageView `json:"by_key"`
 
 	// ByKeyTruncated True when `by_key` was truncated to the cap (a deployment with more active keys than the
 	// cap). `by_model` is never capped (bounded by the configured model fleet).
 	ByKeyTruncated bool `json:"by_key_truncated"`
 
-	// ByModel Per-(model, provider) aggregation — cost attribution by model (the FinOps unit).
+	// ByModel Per-(model, provider) aggregation: cost attribution by model (the FinOps unit).
 	ByModel []ModelUsageView `json:"by_model"`
 
 	// Currency The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`, currently
 	// `"USD"`). A single-const source of truth so removal is one line. Emitted only here.
 	Currency string `json:"currency"`
 
-	// Others The summed remainder BEYOND the `by_key` cap — present exactly when `by_key_truncated`, so
+	// Others The summed remainder BEYOND the `by_key` cap, present exactly when `by_key_truncated`, so
 	// every unit of consumption is attributable at least to "others" (FinOps completeness:
 	// `total == sum(by_key) + others`).
 	Others *UsageBreakdown `json:"others,omitempty"`
 
-	// Total The raw consumption counts + the derived spend estimate — the one shape shared by `total`,
+	// Total The raw consumption counts + the derived spend estimate: the one shape shared by `total`,
 	// `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
 	Total UsageBreakdown `json:"total"`
 
@@ -1389,6 +1508,27 @@ type GetConfigVersionsParams struct {
 
 	// Cursor Opaque continuation cursor from `next_cursor`
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// DeleteExportNameParams defines parameters for DeleteExportName.
+type DeleteExportNameParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PutExportNameJSONBody defines parameters for PutExportName.
+type PutExportNameJSONBody map[string]interface{}
+
+// PutExportNameParams defines parameters for PutExportName.
+type PutExportNameParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchExportNameSettingsParams defines parameters for PatchExportNameSettings.
+type PatchExportNameSettingsParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
 }
 
 // PostGroupsJSONBody defines parameters for PostGroups.
@@ -1478,6 +1618,27 @@ type PatchHooksNameSettingsParams struct {
 	IfMatch *string `json:"If-Match,omitempty"`
 }
 
+// DeleteIdentityProvidersNameParams defines parameters for DeleteIdentityProvidersName.
+type DeleteIdentityProvidersNameParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PutIdentityProvidersNameJSONBody defines parameters for PutIdentityProvidersName.
+type PutIdentityProvidersNameJSONBody map[string]interface{}
+
+// PutIdentityProvidersNameParams defines parameters for PutIdentityProvidersName.
+type PutIdentityProvidersNameParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
+// PatchIdentityProvidersNameSettingsParams defines parameters for PatchIdentityProvidersNameSettings.
+type PatchIdentityProvidersNameSettingsParams struct {
+	// IfMatch Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.
+	IfMatch *string `json:"If-Match,omitempty"`
+}
+
 // GetKeysParams defines parameters for GetKeys.
 type GetKeysParams struct {
 	// Enabled Filter by enabled state (`true`|`false`)
@@ -1495,7 +1656,7 @@ type GetKeysParams struct {
 	// Cursor Opaque continuation cursor from `next_cursor`
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 
-	// Include E-007: set to `tombstoned` to include hard-deleted keys, which are otherwise omitted (each row's `state` reads `"tombstoned"`)
+	// Include Set to `tombstoned` to include hard-deleted keys, which are otherwise omitted (each row's `state` reads `"tombstoned"`)
 	Include *string `form:"include,omitempty" json:"include,omitempty"`
 }
 
@@ -1540,7 +1701,7 @@ type GetPoolsParams struct {
 
 // GetUsageParams defines parameters for GetUsage.
 type GetUsageParams struct {
-	// Window A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate — bill from the raw token split, never store spend_micros as a ledger charge
+	// Window A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
 }
 
@@ -1562,6 +1723,12 @@ type PutConfigSettingsJSONRequestBody PutConfigSettingsJSONBody
 // PostConfigValidateJSONRequestBody defines body for PostConfigValidate for application/json ContentType.
 type PostConfigValidateJSONRequestBody PostConfigValidateJSONBody
 
+// PutExportNameJSONRequestBody defines body for PutExportName for application/json ContentType.
+type PutExportNameJSONRequestBody PutExportNameJSONBody
+
+// PatchExportNameSettingsJSONRequestBody defines body for PatchExportNameSettings for application/json ContentType.
+type PatchExportNameSettingsJSONRequestBody = NamedSettingsReq
+
 // PostGroupsJSONRequestBody defines body for PostGroups for application/json ContentType.
 type PostGroupsJSONRequestBody PostGroupsJSONBody
 
@@ -1579,6 +1746,12 @@ type PutHooksNameJSONRequestBody PutHooksNameJSONBody
 
 // PatchHooksNameSettingsJSONRequestBody defines body for PatchHooksNameSettings for application/json ContentType.
 type PatchHooksNameSettingsJSONRequestBody = PatchSettingsReq
+
+// PutIdentityProvidersNameJSONRequestBody defines body for PutIdentityProvidersName for application/json ContentType.
+type PutIdentityProvidersNameJSONRequestBody PutIdentityProvidersNameJSONBody
+
+// PatchIdentityProvidersNameSettingsJSONRequestBody defines body for PatchIdentityProvidersNameSettings for application/json ContentType.
+type PatchIdentityProvidersNameSettingsJSONRequestBody = NamedSettingsReq
 
 // PostKeysJSONRequestBody defines body for PostKeys for application/json ContentType.
 type PostKeysJSONRequestBody = CreateKeyReq
@@ -1677,21 +1850,21 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/admin-auth (the `GetAdminAuth` operationId).
 	GetAdminAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutAdminAuthWithBody Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+	// PutAdminAuthWithBody Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
 	PutAdminAuthWithBody(ctx context.Context, params *PutAdminAuthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutAdminAuth Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+	// PutAdminAuth Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
 	PutAdminAuth(ctx context.Context, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetAudit Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+	// GetAudit Admin audit log: every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 	//
 	// Corresponds with GET /api/v1/admin/audit (the `GetAudit` operationId).
 	GetAudit(ctx context.Context, params *GetAuditParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1701,14 +1874,14 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/auth (the `GetAuth` operationId).
 	GetAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostAuthCacheFlushWithBody Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+	// PostAuthCacheFlushWithBody Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
 	PostAuthCacheFlushWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostAuthCacheFlush Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+	// PostAuthCacheFlush Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1758,19 +1931,19 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
 	PostConfigRollback(ctx context.Context, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetConfigSettings Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
+	// GetConfigSettings Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest
 	//
 	// Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
 	GetConfigSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutConfigSettingsWithBody SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+	// PutConfigSettingsWithBody SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
 	PutConfigSettingsWithBody(ctx context.Context, params *PutConfigSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutConfigSettings SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+	// PutConfigSettings SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1801,26 +1974,69 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetConfigVersionsV` operationId).
 	GetConfigVersionsV(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetGroups Group registry — the limit tree (parent chain, limits, child_default budget template)
+	// GetExport Every `export:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+	//
+	// Corresponds with GET /api/v1/admin/export (the `GetExport` operationId).
+	GetExport(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteExportName Remove one `export:` definition, refused while another config section still references it by bare name
+	//
+	// Corresponds with DELETE /api/v1/admin/export/{name} (the `DeleteExportName` operationId).
+	DeleteExportName(ctx context.Context, name string, params *DeleteExportNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExportName One `export:` definition
+	//
+	// Corresponds with GET /api/v1/admin/export/{name} (the `GetExportName` operationId).
+	GetExportName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutExportNameWithBody Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+	PutExportNameWithBody(ctx context.Context, name string, params *PutExportNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutExportName Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+	PutExportName(ctx context.Context, name string, params *PutExportNameParams, body PutExportNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchExportNameSettingsWithBody Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+	PatchExportNameSettingsWithBody(ctx context.Context, name string, params *PatchExportNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchExportNameSettings Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+	PatchExportNameSettings(ctx context.Context, name string, params *PatchExportNameSettingsParams, body PatchExportNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetGroups Group registry: the limit tree (parent chain, limits, child_default budget template)
 	//
 	// Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
 	GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostGroupsWithBody Create (or replace) a group at runtime — live immediately (upsert)
+	// PostGroupsWithBody Create (or replace) a group at runtime, live immediately (upsert)
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
 	PostGroupsWithBody(ctx context.Context, params *PostGroupsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostGroups Create (or replace) a group at runtime — live immediately (upsert)
+	// PostGroups Create (or replace) a group at runtime, live immediately (upsert)
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
 	PostGroups(ctx context.Context, params *PostGroupsParams, body PostGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteGroupsName Remove an overlay group at runtime — live immediately
+	// DeleteGroupsName Remove an overlay group at runtime, live immediately
 	//
 	// Corresponds with DELETE /api/v1/admin/groups/{name} (the `DeleteGroupsName` operationId).
 	DeleteGroupsName(ctx context.Context, name string, params *DeleteGroupsNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1830,35 +2046,35 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/groups/{name} (the `GetGroupsName` operationId).
 	GetGroupsName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchGroupsNameWithBody Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+	// PatchGroupsNameWithBody Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
 	PatchGroupsNameWithBody(ctx context.Context, name string, params *PatchGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchGroupsName Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+	// PatchGroupsName Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
 	PatchGroupsName(ctx context.Context, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutGroupsNameWithBody Replace an overlay group definition — live immediately (limits rebuilt)
+	// PutGroupsNameWithBody Replace an overlay group definition, live immediately (limits rebuilt)
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
 	PutGroupsNameWithBody(ctx context.Context, name string, params *PutGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutGroupsName Replace an overlay group definition — live immediately (limits rebuilt)
+	// PutGroupsName Replace an overlay group definition, live immediately (limits rebuilt)
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
 	PutGroupsName(ctx context.Context, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetGroupsNameUsage The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
+	// GetGroupsNameUsage The group's derived current-window usage per (window, pool) enforcement bucket vs its caps: the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 	//
 	// Corresponds with GET /api/v1/admin/groups/{name}/usage (the `GetGroupsNameUsage` operationId).
 	GetGroupsNameUsage(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1868,21 +2084,21 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/hooks (the `GetHooks` operationId).
 	GetHooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostHooksWithBody Register (or replace) a hook at runtime — live immediately
+	// PostHooksWithBody Register (or replace) a hook at runtime, live immediately
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
 	PostHooksWithBody(ctx context.Context, params *PostHooksParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostHooks Register (or replace) a hook at runtime — live immediately
+	// PostHooks Register (or replace) a hook at runtime, live immediately
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
 	PostHooks(ctx context.Context, params *PostHooksParams, body PostHooksJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteHooksName Remove a hook at runtime — live immediately
+	// DeleteHooksName Remove a hook at runtime, live immediately
 	//
 	// Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteHooksName` operationId).
 	DeleteHooksName(ctx context.Context, name string, params *DeleteHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1892,14 +2108,14 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetHooksName` operationId).
 	GetHooksName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutHooksNameWithBody Replace an overlay hook definition — live immediately (grants immutable)
+	// PutHooksNameWithBody Replace an overlay hook definition, live immediately (grants immutable)
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
 	PutHooksNameWithBody(ctx context.Context, name string, params *PutHooksNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PutHooksName Replace an overlay hook definition — live immediately (grants immutable)
+	// PutHooksName Replace an overlay hook definition, live immediately (grants immutable)
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -1935,12 +2151,55 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetHooksNameStatus` operationId).
 	GetHooksNameStatus(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetIdentityProviders Every `identity-providers:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+	//
+	// Corresponds with GET /api/v1/admin/identity-providers (the `GetIdentityProviders` operationId).
+	GetIdentityProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteIdentityProvidersName Remove one `identity-providers:` definition, refused while another config section still references it by bare name
+	//
+	// Corresponds with DELETE /api/v1/admin/identity-providers/{name} (the `DeleteIdentityProvidersName` operationId).
+	DeleteIdentityProvidersName(ctx context.Context, name string, params *DeleteIdentityProvidersNameParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetIdentityProvidersName One `identity-providers:` definition
+	//
+	// Corresponds with GET /api/v1/admin/identity-providers/{name} (the `GetIdentityProvidersName` operationId).
+	GetIdentityProvidersName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutIdentityProvidersNameWithBody Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+	PutIdentityProvidersNameWithBody(ctx context.Context, name string, params *PutIdentityProvidersNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutIdentityProvidersName Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+	PutIdentityProvidersName(ctx context.Context, name string, params *PutIdentityProvidersNameParams, body PutIdentityProvidersNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchIdentityProvidersNameSettingsWithBody Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+	PatchIdentityProvidersNameSettingsWithBody(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchIdentityProvidersNameSettings Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+	PatchIdentityProvidersNameSettings(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, body PatchIdentityProvidersNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetInfo Version, compiled-in plugin proof, uptime, topology
 	//
 	// Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
 	GetInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+	// GetKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
 	//
 	// Corresponds with GET /api/v1/admin/keys (the `GetKeys` operationId).
 	GetKeys(ctx context.Context, params *GetKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1959,7 +2218,7 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
 	PostKeys(ctx context.Context, body PostKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteKeysId Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+	// DeleteKeysId Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)
 	//
 	// Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteKeysId` operationId).
 	DeleteKeysId(ctx context.Context, id string, params *DeleteKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1983,7 +2242,7 @@ type ClientInterface interface {
 	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
 	PatchKeysId(ctx context.Context, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostKeysIdRevoke REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+	// PostKeysIdRevoke REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
 	//
 	// Corresponds with POST /api/v1/admin/keys/{id}/revoke (the `PostKeysIdRevoke` operationId).
 	PostKeysIdRevoke(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2008,7 +2267,7 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/openapi.json (the `GetOpenapiJson` operationId).
 	GetOpenapiJson(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// DeleteOverlaySection DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+	// DeleteOverlaySection DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
 	//
 	// Corresponds with DELETE /api/v1/admin/overlay/{section} (the `DeleteOverlaySection` operationId).
 	DeleteOverlaySection(ctx context.Context, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2032,14 +2291,14 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
 	PostPlugins(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostPluginsInspectWithBody Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	// PostPluginsInspectWithBody Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
 	PostPluginsInspectWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostPluginsInspect Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	// PostPluginsInspect Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2051,14 +2310,14 @@ type ClientInterface interface {
 	// Corresponds with POST /api/v1/admin/plugins/reload (the `PostPluginsReload` operationId).
 	PostPluginsReload(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostPluginsRollbackWithBody EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	// PostPluginsRollbackWithBody EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
 	PostPluginsRollbackWithBody(ctx context.Context, params *PostPluginsRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostPluginsRollback EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	// PostPluginsRollback EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -2070,7 +2329,7 @@ type ClientInterface interface {
 	// Corresponds with DELETE /api/v1/admin/plugins/{file} (the `DeletePluginsFile` operationId).
 	DeletePluginsFile(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetPluginsFileSchema The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+	// GetPluginsFileSchema The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field, which works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
 	//
 	// Corresponds with GET /api/v1/admin/plugins/{file}/schema (the `GetPluginsFileSchema` operationId).
 	GetPluginsFileSchema(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2090,26 +2349,26 @@ type ClientInterface interface {
 	// Corresponds with GET /api/v1/admin/providers (the `GetProviders` operationId).
 	GetProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostRestartWithBody Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	// PostRestartWithBody Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
 	PostRestartWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostRestart Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	// PostRestart Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
 	PostRestart(ctx context.Context, body PostRestartJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PostSigningKeyRotate ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+	// PostSigningKeyRotate ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
 	//
 	// Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
 	PostSigningKeyRotate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetUsage Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+	// GetUsage Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros
 	//
 	// Corresponds with GET /api/v1/admin/usage (the `GetUsage` operationId).
 	GetUsage(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2130,7 +2389,7 @@ func (c *Client) GetAdminAuth(ctx context.Context, reqEditors ...RequestEditorFn
 	return c.Client.Do(req)
 }
 
-// PutAdminAuthWithBody Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+// PutAdminAuthWithBody Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 //
 // Takes any type of body and a specified content type.
 //
@@ -2147,7 +2406,7 @@ func (c *Client) PutAdminAuthWithBody(ctx context.Context, params *PutAdminAuthP
 	return c.Client.Do(req)
 }
 
-// PutAdminAuth Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+// PutAdminAuth Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2164,7 +2423,7 @@ func (c *Client) PutAdminAuth(ctx context.Context, params *PutAdminAuthParams, b
 	return c.Client.Do(req)
 }
 
-// GetAudit Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+// GetAudit Admin audit log: every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 //
 // Corresponds with GET /api/v1/admin/audit (the `GetAudit` operationId).
 func (c *Client) GetAudit(ctx context.Context, params *GetAuditParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2194,7 +2453,7 @@ func (c *Client) GetAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*h
 	return c.Client.Do(req)
 }
 
-// PostAuthCacheFlushWithBody Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+// PostAuthCacheFlushWithBody Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 //
 // Takes any type of body and a specified content type.
 //
@@ -2211,7 +2470,7 @@ func (c *Client) PostAuthCacheFlushWithBody(ctx context.Context, contentType str
 	return c.Client.Do(req)
 }
 
-// PostAuthCacheFlush Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+// PostAuthCacheFlush Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2341,7 +2600,7 @@ func (c *Client) PostConfigRollback(ctx context.Context, params *PostConfigRollb
 	return c.Client.Do(req)
 }
 
-// GetConfigSettings Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
+// GetConfigSettings Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest
 //
 // Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
 func (c *Client) GetConfigSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2356,7 +2615,7 @@ func (c *Client) GetConfigSettings(ctx context.Context, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
-// PutConfigSettingsWithBody SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+// PutConfigSettingsWithBody SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 //
 // Takes any type of body and a specified content type.
 //
@@ -2373,7 +2632,7 @@ func (c *Client) PutConfigSettingsWithBody(ctx context.Context, params *PutConfi
 	return c.Client.Do(req)
 }
 
-// PutConfigSettings SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+// PutConfigSettings SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2454,7 +2713,120 @@ func (c *Client) GetConfigVersionsV(ctx context.Context, v int, reqEditors ...Re
 	return c.Client.Do(req)
 }
 
-// GetGroups Group registry — the limit tree (parent chain, limits, child_default budget template)
+// GetExport Every `export:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+//
+// Corresponds with GET /api/v1/admin/export (the `GetExport` operationId).
+func (c *Client) GetExport(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExportRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteExportName Remove one `export:` definition, refused while another config section still references it by bare name
+//
+// Corresponds with DELETE /api/v1/admin/export/{name} (the `DeleteExportName` operationId).
+func (c *Client) DeleteExportName(ctx context.Context, name string, params *DeleteExportNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteExportNameRequest(c.Server, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetExportName One `export:` definition
+//
+// Corresponds with GET /api/v1/admin/export/{name} (the `GetExportName` operationId).
+func (c *Client) GetExportName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExportNameRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutExportNameWithBody Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+func (c *Client) PutExportNameWithBody(ctx context.Context, name string, params *PutExportNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutExportNameRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutExportName Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+func (c *Client) PutExportName(ctx context.Context, name string, params *PutExportNameParams, body PutExportNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutExportNameRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchExportNameSettingsWithBody Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+func (c *Client) PatchExportNameSettingsWithBody(ctx context.Context, name string, params *PatchExportNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchExportNameSettingsRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchExportNameSettings Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+func (c *Client) PatchExportNameSettings(ctx context.Context, name string, params *PatchExportNameSettingsParams, body PatchExportNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchExportNameSettingsRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetGroups Group registry: the limit tree (parent chain, limits, child_default budget template)
 //
 // Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
 func (c *Client) GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2469,7 +2841,7 @@ func (c *Client) GetGroups(ctx context.Context, reqEditors ...RequestEditorFn) (
 	return c.Client.Do(req)
 }
 
-// PostGroupsWithBody Create (or replace) a group at runtime — live immediately (upsert)
+// PostGroupsWithBody Create (or replace) a group at runtime, live immediately (upsert)
 //
 // Takes any type of body and a specified content type.
 //
@@ -2486,7 +2858,7 @@ func (c *Client) PostGroupsWithBody(ctx context.Context, params *PostGroupsParam
 	return c.Client.Do(req)
 }
 
-// PostGroups Create (or replace) a group at runtime — live immediately (upsert)
+// PostGroups Create (or replace) a group at runtime, live immediately (upsert)
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2503,7 +2875,7 @@ func (c *Client) PostGroups(ctx context.Context, params *PostGroupsParams, body 
 	return c.Client.Do(req)
 }
 
-// DeleteGroupsName Remove an overlay group at runtime — live immediately
+// DeleteGroupsName Remove an overlay group at runtime, live immediately
 //
 // Corresponds with DELETE /api/v1/admin/groups/{name} (the `DeleteGroupsName` operationId).
 func (c *Client) DeleteGroupsName(ctx context.Context, name string, params *DeleteGroupsNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2533,7 +2905,7 @@ func (c *Client) GetGroupsName(ctx context.Context, name string, reqEditors ...R
 	return c.Client.Do(req)
 }
 
-// PatchGroupsNameWithBody Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+// PatchGroupsNameWithBody Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 //
 // Takes any type of body and a specified content type.
 //
@@ -2550,7 +2922,7 @@ func (c *Client) PatchGroupsNameWithBody(ctx context.Context, name string, param
 	return c.Client.Do(req)
 }
 
-// PatchGroupsName Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+// PatchGroupsName Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2567,7 +2939,7 @@ func (c *Client) PatchGroupsName(ctx context.Context, name string, params *Patch
 	return c.Client.Do(req)
 }
 
-// PutGroupsNameWithBody Replace an overlay group definition — live immediately (limits rebuilt)
+// PutGroupsNameWithBody Replace an overlay group definition, live immediately (limits rebuilt)
 //
 // Takes any type of body and a specified content type.
 //
@@ -2584,7 +2956,7 @@ func (c *Client) PutGroupsNameWithBody(ctx context.Context, name string, params 
 	return c.Client.Do(req)
 }
 
-// PutGroupsName Replace an overlay group definition — live immediately (limits rebuilt)
+// PutGroupsName Replace an overlay group definition, live immediately (limits rebuilt)
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2601,7 +2973,7 @@ func (c *Client) PutGroupsName(ctx context.Context, name string, params *PutGrou
 	return c.Client.Do(req)
 }
 
-// GetGroupsNameUsage The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
+// GetGroupsNameUsage The group's derived current-window usage per (window, pool) enforcement bucket vs its caps: the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 //
 // Corresponds with GET /api/v1/admin/groups/{name}/usage (the `GetGroupsNameUsage` operationId).
 func (c *Client) GetGroupsNameUsage(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2631,7 +3003,7 @@ func (c *Client) GetHooks(ctx context.Context, reqEditors ...RequestEditorFn) (*
 	return c.Client.Do(req)
 }
 
-// PostHooksWithBody Register (or replace) a hook at runtime — live immediately
+// PostHooksWithBody Register (or replace) a hook at runtime, live immediately
 //
 // Takes any type of body and a specified content type.
 //
@@ -2648,7 +3020,7 @@ func (c *Client) PostHooksWithBody(ctx context.Context, params *PostHooksParams,
 	return c.Client.Do(req)
 }
 
-// PostHooks Register (or replace) a hook at runtime — live immediately
+// PostHooks Register (or replace) a hook at runtime, live immediately
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2665,7 +3037,7 @@ func (c *Client) PostHooks(ctx context.Context, params *PostHooksParams, body Po
 	return c.Client.Do(req)
 }
 
-// DeleteHooksName Remove a hook at runtime — live immediately
+// DeleteHooksName Remove a hook at runtime, live immediately
 //
 // Corresponds with DELETE /api/v1/admin/hooks/{name} (the `DeleteHooksName` operationId).
 func (c *Client) DeleteHooksName(ctx context.Context, name string, params *DeleteHooksNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2695,7 +3067,7 @@ func (c *Client) GetHooksName(ctx context.Context, name string, reqEditors ...Re
 	return c.Client.Do(req)
 }
 
-// PutHooksNameWithBody Replace an overlay hook definition — live immediately (grants immutable)
+// PutHooksNameWithBody Replace an overlay hook definition, live immediately (grants immutable)
 //
 // Takes any type of body and a specified content type.
 //
@@ -2712,7 +3084,7 @@ func (c *Client) PutHooksNameWithBody(ctx context.Context, name string, params *
 	return c.Client.Do(req)
 }
 
-// PutHooksName Replace an overlay hook definition — live immediately (grants immutable)
+// PutHooksName Replace an overlay hook definition, live immediately (grants immutable)
 //
 // Takes a body of the `application/json` content type.
 //
@@ -2808,6 +3180,119 @@ func (c *Client) GetHooksNameStatus(ctx context.Context, name string, reqEditors
 	return c.Client.Do(req)
 }
 
+// GetIdentityProviders Every `identity-providers:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+//
+// Corresponds with GET /api/v1/admin/identity-providers (the `GetIdentityProviders` operationId).
+func (c *Client) GetIdentityProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetIdentityProvidersRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteIdentityProvidersName Remove one `identity-providers:` definition, refused while another config section still references it by bare name
+//
+// Corresponds with DELETE /api/v1/admin/identity-providers/{name} (the `DeleteIdentityProvidersName` operationId).
+func (c *Client) DeleteIdentityProvidersName(ctx context.Context, name string, params *DeleteIdentityProvidersNameParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteIdentityProvidersNameRequest(c.Server, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetIdentityProvidersName One `identity-providers:` definition
+//
+// Corresponds with GET /api/v1/admin/identity-providers/{name} (the `GetIdentityProvidersName` operationId).
+func (c *Client) GetIdentityProvidersName(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetIdentityProvidersNameRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutIdentityProvidersNameWithBody Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+func (c *Client) PutIdentityProvidersNameWithBody(ctx context.Context, name string, params *PutIdentityProvidersNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutIdentityProvidersNameRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutIdentityProvidersName Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+func (c *Client) PutIdentityProvidersName(ctx context.Context, name string, params *PutIdentityProvidersNameParams, body PutIdentityProvidersNameJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutIdentityProvidersNameRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchIdentityProvidersNameSettingsWithBody Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+func (c *Client) PatchIdentityProvidersNameSettingsWithBody(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchIdentityProvidersNameSettingsRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchIdentityProvidersNameSettings Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+func (c *Client) PatchIdentityProvidersNameSettings(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, body PatchIdentityProvidersNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchIdentityProvidersNameSettingsRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // GetInfo Version, compiled-in plugin proof, uptime, topology
 //
 // Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
@@ -2823,7 +3308,7 @@ func (c *Client) GetInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*h
 	return c.Client.Do(req)
 }
 
-// GetKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+// GetKeys List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
 //
 // Corresponds with GET /api/v1/admin/keys (the `GetKeys` operationId).
 func (c *Client) GetKeys(ctx context.Context, params *GetKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2872,7 +3357,7 @@ func (c *Client) PostKeys(ctx context.Context, body PostKeysJSONRequestBody, req
 	return c.Client.Do(req)
 }
 
-// DeleteKeysId Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+// DeleteKeysId Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)
 //
 // Corresponds with DELETE /api/v1/admin/keys/{id} (the `DeleteKeysId` operationId).
 func (c *Client) DeleteKeysId(ctx context.Context, id string, params *DeleteKeysIdParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2936,7 +3421,7 @@ func (c *Client) PatchKeysId(ctx context.Context, id string, params *PatchKeysId
 	return c.Client.Do(req)
 }
 
-// PostKeysIdRevoke REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+// PostKeysIdRevoke REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
 //
 // Corresponds with POST /api/v1/admin/keys/{id}/revoke (the `PostKeysIdRevoke` operationId).
 func (c *Client) PostKeysIdRevoke(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3011,7 +3496,7 @@ func (c *Client) GetOpenapiJson(ctx context.Context, reqEditors ...RequestEditor
 	return c.Client.Do(req)
 }
 
-// DeleteOverlaySection DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+// DeleteOverlaySection DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
 //
 // Corresponds with DELETE /api/v1/admin/overlay/{section} (the `DeleteOverlaySection` operationId).
 func (c *Client) DeleteOverlaySection(ctx context.Context, section DeleteOverlaySectionParamsSection, params *DeleteOverlaySectionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3075,7 +3560,7 @@ func (c *Client) PostPlugins(ctx context.Context, body PostPluginsJSONRequestBod
 	return c.Client.Do(req)
 }
 
-// PostPluginsInspectWithBody Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+// PostPluginsInspectWithBody Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 //
 // Takes any type of body and a specified content type.
 //
@@ -3092,7 +3577,7 @@ func (c *Client) PostPluginsInspectWithBody(ctx context.Context, contentType str
 	return c.Client.Do(req)
 }
 
-// PostPluginsInspect Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+// PostPluginsInspect Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3124,7 +3609,7 @@ func (c *Client) PostPluginsReload(ctx context.Context, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
-// PostPluginsRollbackWithBody EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+// PostPluginsRollbackWithBody EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 //
 // Takes any type of body and a specified content type.
 //
@@ -3141,7 +3626,7 @@ func (c *Client) PostPluginsRollbackWithBody(ctx context.Context, params *PostPl
 	return c.Client.Do(req)
 }
 
-// PostPluginsRollback EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+// PostPluginsRollback EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3173,7 +3658,7 @@ func (c *Client) DeletePluginsFile(ctx context.Context, file string, reqEditors 
 	return c.Client.Do(req)
 }
 
-// GetPluginsFileSchema The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+// GetPluginsFileSchema The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field, which works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
 //
 // Corresponds with GET /api/v1/admin/plugins/{file}/schema (the `GetPluginsFileSchema` operationId).
 func (c *Client) GetPluginsFileSchema(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3233,7 +3718,7 @@ func (c *Client) GetProviders(ctx context.Context, reqEditors ...RequestEditorFn
 	return c.Client.Do(req)
 }
 
-// PostRestartWithBody Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+// PostRestartWithBody Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 //
 // Takes any type of body and a specified content type.
 //
@@ -3250,7 +3735,7 @@ func (c *Client) PostRestartWithBody(ctx context.Context, contentType string, bo
 	return c.Client.Do(req)
 }
 
-// PostRestart Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+// PostRestart Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 //
 // Takes a body of the `application/json` content type.
 //
@@ -3267,7 +3752,7 @@ func (c *Client) PostRestart(ctx context.Context, body PostRestartJSONRequestBod
 	return c.Client.Do(req)
 }
 
-// PostSigningKeyRotate ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+// PostSigningKeyRotate ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
 //
 // Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
 func (c *Client) PostSigningKeyRotate(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3282,7 +3767,7 @@ func (c *Client) PostSigningKeyRotate(ctx context.Context, reqEditors ...Request
 	return c.Client.Do(req)
 }
 
-// GetUsage Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+// GetUsage Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros
 //
 // Corresponds with GET /api/v1/admin/usage (the `GetUsage` operationId).
 func (c *Client) GetUsage(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -3975,6 +4460,240 @@ func NewGetConfigVersionsVRequest(server string, v int) (*http.Request, error) {
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetExportRequest constructs an http.Request for the GetExport method
+func NewGetExportRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/export")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteExportNameRequest constructs an http.Request for the DeleteExportName method
+func NewDeleteExportNameRequest(server string, name string, params *DeleteExportNameParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/export/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetExportNameRequest constructs an http.Request for the GetExportName method
+func NewGetExportNameRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/export/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutExportNameRequest calls the generic PutExportName builder with application/json body
+func NewPutExportNameRequest(server string, name string, params *PutExportNameParams, body PutExportNameJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutExportNameRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPutExportNameRequestWithBody constructs an http.Request for the PutExportName method, with any body, and a specified content type
+func NewPutExportNameRequestWithBody(server string, name string, params *PutExportNameParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/export/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPatchExportNameSettingsRequest calls the generic PatchExportNameSettings builder with application/json body
+func NewPatchExportNameSettingsRequest(server string, name string, params *PatchExportNameSettingsParams, body PatchExportNameSettingsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchExportNameSettingsRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPatchExportNameSettingsRequestWithBody constructs an http.Request for the PatchExportNameSettings method, with any body, and a specified content type
+func NewPatchExportNameSettingsRequestWithBody(server string, name string, params *PatchExportNameSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/export/%s/settings", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -4689,6 +5408,240 @@ func NewGetHooksNameStatusRequest(server string, name string) (*http.Request, er
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetIdentityProvidersRequest constructs an http.Request for the GetIdentityProviders method
+func NewGetIdentityProvidersRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/identity-providers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteIdentityProvidersNameRequest constructs an http.Request for the DeleteIdentityProvidersName method
+func NewDeleteIdentityProvidersNameRequest(server string, name string, params *DeleteIdentityProvidersNameParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/identity-providers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetIdentityProvidersNameRequest constructs an http.Request for the GetIdentityProvidersName method
+func NewGetIdentityProvidersNameRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/identity-providers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutIdentityProvidersNameRequest calls the generic PutIdentityProvidersName builder with application/json body
+func NewPutIdentityProvidersNameRequest(server string, name string, params *PutIdentityProvidersNameParams, body PutIdentityProvidersNameJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutIdentityProvidersNameRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPutIdentityProvidersNameRequestWithBody constructs an http.Request for the PutIdentityProvidersName method, with any body, and a specified content type
+func NewPutIdentityProvidersNameRequestWithBody(server string, name string, params *PutIdentityProvidersNameParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/identity-providers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPatchIdentityProvidersNameSettingsRequest calls the generic PatchIdentityProvidersNameSettings builder with application/json body
+func NewPatchIdentityProvidersNameSettingsRequest(server string, name string, params *PatchIdentityProvidersNameSettingsParams, body PatchIdentityProvidersNameSettingsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchIdentityProvidersNameSettingsRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewPatchIdentityProvidersNameSettingsRequestWithBody constructs an http.Request for the PatchIdentityProvidersNameSettings method, with any body, and a specified content type
+func NewPatchIdentityProvidersNameSettingsRequestWithBody(server string, name string, params *PatchIdentityProvidersNameSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/identity-providers/%s/settings", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IfMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", *params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -5792,21 +6745,21 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/admin-auth (the `GetAdminAuth` operationId).
 	GetAdminAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAdminAuthResponse, error)
 
-	// PutAdminAuthWithBodyWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+	// PutAdminAuthWithBodyWithResponse Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
 	PutAdminAuthWithBodyWithResponse(ctx context.Context, params *PutAdminAuthParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutAdminAuthResponse, error)
 
-	// PutAdminAuthWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+	// PutAdminAuthWithResponse Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /api/v1/admin/admin-auth (the `PutAdminAuth` operationId).
 	PutAdminAuthWithResponse(ctx context.Context, params *PutAdminAuthParams, body PutAdminAuthJSONRequestBody, reqEditors ...RequestEditorFn) (*PutAdminAuthResponse, error)
 
-	// GetAuditWithResponse Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+	// GetAuditWithResponse Admin audit log: every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -5820,14 +6773,14 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/auth (the `GetAuth` operationId).
 	GetAuthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAuthResponse, error)
 
-	// PostAuthCacheFlushWithBodyWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+	// PostAuthCacheFlushWithBodyWithResponse Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/auth/cache/flush (the `PostAuthCacheFlush` operationId).
 	PostAuthCacheFlushWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostAuthCacheFlushResponse, error)
 
-	// PostAuthCacheFlushWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+	// PostAuthCacheFlushWithResponse Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -5883,21 +6836,21 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/admin/config/rollback (the `PostConfigRollback` operationId).
 	PostConfigRollbackWithResponse(ctx context.Context, params *PostConfigRollbackParams, body PostConfigRollbackJSONRequestBody, reqEditors ...RequestEditorFn) (*PostConfigRollbackResponse, error)
 
-	// GetConfigSettingsWithResponse Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
+	// GetConfigSettingsWithResponse Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with GET /api/v1/admin/config/settings (the `GetConfigSettings` operationId).
 	GetConfigSettingsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetConfigSettingsResponse, error)
 
-	// PutConfigSettingsWithBodyWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+	// PutConfigSettingsWithBodyWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /api/v1/admin/config/settings (the `PutConfigSettings` operationId).
 	PutConfigSettingsWithBodyWithResponse(ctx context.Context, params *PutConfigSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutConfigSettingsResponse, error)
 
-	// PutConfigSettingsWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+	// PutConfigSettingsWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -5932,28 +6885,77 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/config/versions/{v} (the `GetConfigVersionsV` operationId).
 	GetConfigVersionsVWithResponse(ctx context.Context, v int, reqEditors ...RequestEditorFn) (*GetConfigVersionsVResponse, error)
 
-	// GetGroupsWithResponse Group registry — the limit tree (parent chain, limits, child_default budget template)
+	// GetExportWithResponse Every `export:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/export (the `GetExport` operationId).
+	GetExportWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetExportResponse, error)
+
+	// DeleteExportNameWithResponse Remove one `export:` definition, refused while another config section still references it by bare name
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/admin/export/{name} (the `DeleteExportName` operationId).
+	DeleteExportNameWithResponse(ctx context.Context, name string, params *DeleteExportNameParams, reqEditors ...RequestEditorFn) (*DeleteExportNameResponse, error)
+
+	// GetExportNameWithResponse One `export:` definition
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/export/{name} (the `GetExportName` operationId).
+	GetExportNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetExportNameResponse, error)
+
+	// PutExportNameWithBodyWithResponse Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+	PutExportNameWithBodyWithResponse(ctx context.Context, name string, params *PutExportNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutExportNameResponse, error)
+
+	// PutExportNameWithResponse Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+	PutExportNameWithResponse(ctx context.Context, name string, params *PutExportNameParams, body PutExportNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutExportNameResponse, error)
+
+	// PatchExportNameSettingsWithBodyWithResponse Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+	PatchExportNameSettingsWithBodyWithResponse(ctx context.Context, name string, params *PatchExportNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchExportNameSettingsResponse, error)
+
+	// PatchExportNameSettingsWithResponse Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+	PatchExportNameSettingsWithResponse(ctx context.Context, name string, params *PatchExportNameSettingsParams, body PatchExportNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchExportNameSettingsResponse, error)
+
+	// GetGroupsWithResponse Group registry: the limit tree (parent chain, limits, child_default budget template)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with GET /api/v1/admin/groups (the `GetGroups` operationId).
 	GetGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGroupsResponse, error)
 
-	// PostGroupsWithBodyWithResponse Create (or replace) a group at runtime — live immediately (upsert)
+	// PostGroupsWithBodyWithResponse Create (or replace) a group at runtime, live immediately (upsert)
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
 	PostGroupsWithBodyWithResponse(ctx context.Context, params *PostGroupsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostGroupsResponse, error)
 
-	// PostGroupsWithResponse Create (or replace) a group at runtime — live immediately (upsert)
+	// PostGroupsWithResponse Create (or replace) a group at runtime, live immediately (upsert)
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/groups (the `PostGroups` operationId).
 	PostGroupsWithResponse(ctx context.Context, params *PostGroupsParams, body PostGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostGroupsResponse, error)
 
-	// DeleteGroupsNameWithResponse Remove an overlay group at runtime — live immediately
+	// DeleteGroupsNameWithResponse Remove an overlay group at runtime, live immediately
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -5967,35 +6969,35 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/groups/{name} (the `GetGroupsName` operationId).
 	GetGroupsNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetGroupsNameResponse, error)
 
-	// PatchGroupsNameWithBodyWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+	// PatchGroupsNameWithBodyWithResponse Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
 	PatchGroupsNameWithBodyWithResponse(ctx context.Context, name string, params *PatchGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchGroupsNameResponse, error)
 
-	// PatchGroupsNameWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+	// PatchGroupsNameWithResponse Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PATCH /api/v1/admin/groups/{name} (the `PatchGroupsName` operationId).
 	PatchGroupsNameWithResponse(ctx context.Context, name string, params *PatchGroupsNameParams, body PatchGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchGroupsNameResponse, error)
 
-	// PutGroupsNameWithBodyWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
+	// PutGroupsNameWithBodyWithResponse Replace an overlay group definition, live immediately (limits rebuilt)
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
 	PutGroupsNameWithBodyWithResponse(ctx context.Context, name string, params *PutGroupsNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutGroupsNameResponse, error)
 
-	// PutGroupsNameWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
+	// PutGroupsNameWithResponse Replace an overlay group definition, live immediately (limits rebuilt)
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /api/v1/admin/groups/{name} (the `PutGroupsName` operationId).
 	PutGroupsNameWithResponse(ctx context.Context, name string, params *PutGroupsNameParams, body PutGroupsNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutGroupsNameResponse, error)
 
-	// GetGroupsNameUsageWithResponse The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
+	// GetGroupsNameUsageWithResponse The group's derived current-window usage per (window, pool) enforcement bucket vs its caps: the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6009,21 +7011,21 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/hooks (the `GetHooks` operationId).
 	GetHooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHooksResponse, error)
 
-	// PostHooksWithBodyWithResponse Register (or replace) a hook at runtime — live immediately
+	// PostHooksWithBodyWithResponse Register (or replace) a hook at runtime, live immediately
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
 	PostHooksWithBodyWithResponse(ctx context.Context, params *PostHooksParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostHooksResponse, error)
 
-	// PostHooksWithResponse Register (or replace) a hook at runtime — live immediately
+	// PostHooksWithResponse Register (or replace) a hook at runtime, live immediately
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/hooks (the `PostHooks` operationId).
 	PostHooksWithResponse(ctx context.Context, params *PostHooksParams, body PostHooksJSONRequestBody, reqEditors ...RequestEditorFn) (*PostHooksResponse, error)
 
-	// DeleteHooksNameWithResponse Remove a hook at runtime — live immediately
+	// DeleteHooksNameWithResponse Remove a hook at runtime, live immediately
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6037,14 +7039,14 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/hooks/{name} (the `GetHooksName` operationId).
 	GetHooksNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameResponse, error)
 
-	// PutHooksNameWithBodyWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+	// PutHooksNameWithBodyWithResponse Replace an overlay hook definition, live immediately (grants immutable)
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with PUT /api/v1/admin/hooks/{name} (the `PutHooksName` operationId).
 	PutHooksNameWithBodyWithResponse(ctx context.Context, name string, params *PutHooksNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutHooksNameResponse, error)
 
-	// PutHooksNameWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+	// PutHooksNameWithResponse Replace an overlay hook definition, live immediately (grants immutable)
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -6086,6 +7088,55 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/hooks/{name}/status (the `GetHooksNameStatus` operationId).
 	GetHooksNameStatusWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetHooksNameStatusResponse, error)
 
+	// GetIdentityProvidersWithResponse Every `identity-providers:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/identity-providers (the `GetIdentityProviders` operationId).
+	GetIdentityProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetIdentityProvidersResponse, error)
+
+	// DeleteIdentityProvidersNameWithResponse Remove one `identity-providers:` definition, refused while another config section still references it by bare name
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /api/v1/admin/identity-providers/{name} (the `DeleteIdentityProvidersName` operationId).
+	DeleteIdentityProvidersNameWithResponse(ctx context.Context, name string, params *DeleteIdentityProvidersNameParams, reqEditors ...RequestEditorFn) (*DeleteIdentityProvidersNameResponse, error)
+
+	// GetIdentityProvidersNameWithResponse One `identity-providers:` definition
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/admin/identity-providers/{name} (the `GetIdentityProvidersName` operationId).
+	GetIdentityProvidersNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetIdentityProvidersNameResponse, error)
+
+	// PutIdentityProvidersNameWithBodyWithResponse Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+	PutIdentityProvidersNameWithBodyWithResponse(ctx context.Context, name string, params *PutIdentityProvidersNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutIdentityProvidersNameResponse, error)
+
+	// PutIdentityProvidersNameWithResponse Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+	PutIdentityProvidersNameWithResponse(ctx context.Context, name string, params *PutIdentityProvidersNameParams, body PutIdentityProvidersNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutIdentityProvidersNameResponse, error)
+
+	// PatchIdentityProvidersNameSettingsWithBodyWithResponse Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+	PatchIdentityProvidersNameSettingsWithBodyWithResponse(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchIdentityProvidersNameSettingsResponse, error)
+
+	// PatchIdentityProvidersNameSettingsWithResponse Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+	PatchIdentityProvidersNameSettingsWithResponse(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, body PatchIdentityProvidersNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchIdentityProvidersNameSettingsResponse, error)
+
 	// GetInfoWithResponse Version, compiled-in plugin proof, uptime, topology
 	//
 	// Returns a wrapper object for the known response body format(s).
@@ -6093,7 +7144,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/info (the `GetInfo` operationId).
 	GetInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetInfoResponse, error)
 
-	// GetKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+	// GetKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6114,7 +7165,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/admin/keys (the `PostKeys` operationId).
 	PostKeysWithResponse(ctx context.Context, body PostKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*PostKeysResponse, error)
 
-	// DeleteKeysIdWithResponse Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+	// DeleteKeysIdWithResponse Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6142,7 +7193,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with PATCH /api/v1/admin/keys/{id} (the `PatchKeysId` operationId).
 	PatchKeysIdWithResponse(ctx context.Context, id string, params *PatchKeysIdParams, body PatchKeysIdJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchKeysIdResponse, error)
 
-	// PostKeysIdRevokeWithResponse REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+	// PostKeysIdRevokeWithResponse REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6177,7 +7228,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/openapi.json (the `GetOpenapiJson` operationId).
 	GetOpenapiJsonWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOpenapiJsonResponse, error)
 
-	// DeleteOverlaySectionWithResponse DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+	// DeleteOverlaySectionWithResponse DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6205,14 +7256,14 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/admin/plugins (the `PostPlugins` operationId).
 	PostPluginsWithResponse(ctx context.Context, body PostPluginsJSONRequestBody, reqEditors ...RequestEditorFn) (*PostPluginsResponse, error)
 
-	// PostPluginsInspectWithBodyWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	// PostPluginsInspectWithBodyWithResponse Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/plugins/inspect (the `PostPluginsInspect` operationId).
 	PostPluginsInspectWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsInspectResponse, error)
 
-	// PostPluginsInspectWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+	// PostPluginsInspectWithResponse Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -6226,14 +7277,14 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with POST /api/v1/admin/plugins/reload (the `PostPluginsReload` operationId).
 	PostPluginsReloadWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostPluginsReloadResponse, error)
 
-	// PostPluginsRollbackWithBodyWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	// PostPluginsRollbackWithBodyWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/plugins/rollback (the `PostPluginsRollback` operationId).
 	PostPluginsRollbackWithBodyWithResponse(ctx context.Context, params *PostPluginsRollbackParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostPluginsRollbackResponse, error)
 
-	// PostPluginsRollbackWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+	// PostPluginsRollbackWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -6247,7 +7298,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with DELETE /api/v1/admin/plugins/{file} (the `DeletePluginsFile` operationId).
 	DeletePluginsFileWithResponse(ctx context.Context, file string, reqEditors ...RequestEditorFn) (*DeletePluginsFileResponse, error)
 
-	// GetPluginsFileSchemaWithResponse The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+	// GetPluginsFileSchemaWithResponse The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field, which works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -6275,28 +7326,28 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /api/v1/admin/providers (the `GetProviders` operationId).
 	GetProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetProvidersResponse, error)
 
-	// PostRestartWithBodyWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	// PostRestartWithBodyWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
 	PostRestartWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostRestartResponse, error)
 
-	// PostRestartWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+	// PostRestartWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/restart (the `PostRestart` operationId).
 	PostRestartWithResponse(ctx context.Context, body PostRestartJSONRequestBody, reqEditors ...RequestEditorFn) (*PostRestartResponse, error)
 
-	// PostSigningKeyRotateWithResponse ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+	// PostSigningKeyRotateWithResponse ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/admin/signing-key/rotate (the `PostSigningKeyRotate` operationId).
 	PostSigningKeyRotateWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostSigningKeyRotateResponse, error)
 
-	// GetUsageWithResponse Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+	// GetUsageWithResponse Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -7403,6 +8454,393 @@ func (r GetConfigVersionsVResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetConfigVersionsVResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExportResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PageNamedDefView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetExportResponse) GetJSON200() *PageNamedDefView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetExportResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetExportResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetExportResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetExportResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExportResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExportResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExportResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteExportNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteExportNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteExportNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeleteExportNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteExportNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteExportNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeleteExportNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteExportNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteExportNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteExportNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteExportNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteExportNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetExportNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NamedDefView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetExportNameResponse) GetJSON200() *NamedDefView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetExportNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetExportNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetExportNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetExportNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetExportNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExportNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExportNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetExportNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PutExportNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NamedDefView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutExportNameResponse) GetJSON200() *NamedDefView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PutExportNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PutExportNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PutExportNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PutExportNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PutExportNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PutExportNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PutExportNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PutExportNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutExportNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PutExportNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PatchExportNameSettingsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NamedDefView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON200() *NamedDefView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PatchExportNameSettingsResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PatchExportNameSettingsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PatchExportNameSettingsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PatchExportNameSettingsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PatchExportNameSettingsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -8647,6 +10085,393 @@ func (r GetHooksNameStatusResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetHooksNameStatusResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetIdentityProvidersResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PageNamedDefView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetIdentityProvidersResponse) GetJSON200() *PageNamedDefView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetIdentityProvidersResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetIdentityProvidersResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetIdentityProvidersResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetIdentityProvidersResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetIdentityProvidersResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetIdentityProvidersResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetIdentityProvidersResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteIdentityProvidersNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteIdentityProvidersNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteIdentityProvidersNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteIdentityProvidersNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteIdentityProvidersNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteIdentityProvidersNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetIdentityProvidersNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NamedDefView
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetIdentityProvidersNameResponse) GetJSON200() *NamedDefView {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetIdentityProvidersNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetIdentityProvidersNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetIdentityProvidersNameResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetIdentityProvidersNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetIdentityProvidersNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetIdentityProvidersNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetIdentityProvidersNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetIdentityProvidersNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PutIdentityProvidersNameResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NamedDefView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON200() *NamedDefView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PutIdentityProvidersNameResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PutIdentityProvidersNameResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PutIdentityProvidersNameResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutIdentityProvidersNameResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PutIdentityProvidersNameResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PatchIdentityProvidersNameSettingsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *NamedDefView
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Error
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Error
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *Error
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON429 the response for an HTTP 429 `application/json` response
+	JSON429 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON200() *NamedDefView {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON401() *Error {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON403() *Error {
+	return r.JSON403
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON404() *Error {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON429 returns the response for an HTTP 429 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON429() *Error {
+	return r.JSON429
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PatchIdentityProvidersNameSettingsResponse) GetJSON500() *Error {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PatchIdentityProvidersNameSettingsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PatchIdentityProvidersNameSettingsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PatchIdentityProvidersNameSettingsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PatchIdentityProvidersNameSettingsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -10552,7 +12377,7 @@ func (c *ClientWithResponses) GetAdminAuthWithResponse(ctx context.Context, reqE
 	return ParseGetAdminAuthResponse(rsp)
 }
 
-// PutAdminAuthWithBodyWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+// PutAdminAuthWithBodyWithResponse Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10565,7 +12390,7 @@ func (c *ClientWithResponses) PutAdminAuthWithBodyWithResponse(ctx context.Conte
 	return ParsePutAdminAuthResponse(rsp)
 }
 
-// PutAdminAuthWithResponse Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
+// PutAdminAuthWithResponse Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10578,7 +12403,7 @@ func (c *ClientWithResponses) PutAdminAuthWithResponse(ctx context.Context, para
 	return ParsePutAdminAuthResponse(rsp)
 }
 
-// GetAuditWithResponse Admin audit log — every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
+// GetAuditWithResponse Admin audit log: every mutation with its outcome (newest first). Page: ?limit=, ?cursor=; returns {items, next_cursor}
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10604,7 +12429,7 @@ func (c *ClientWithResponses) GetAuthWithResponse(ctx context.Context, reqEditor
 	return ParseGetAuthResponse(rsp)
 }
 
-// PostAuthCacheFlushWithBodyWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+// PostAuthCacheFlushWithBodyWithResponse Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10617,7 +12442,7 @@ func (c *ClientWithResponses) PostAuthCacheFlushWithBodyWithResponse(ctx context
 	return ParsePostAuthCacheFlushResponse(rsp)
 }
 
-// PostAuthCacheFlushWithResponse Flush the credential cache — one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
+// PostAuthCacheFlushWithResponse Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10721,7 +12546,7 @@ func (c *ClientWithResponses) PostConfigRollbackWithResponse(ctx context.Context
 	return ParsePostConfigRollbackResponse(rsp)
 }
 
-// GetConfigSettingsWithResponse Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest
+// GetConfigSettingsWithResponse Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10734,7 +12559,7 @@ func (c *ClientWithResponses) GetConfigSettingsWithResponse(ctx context.Context,
 	return ParseGetConfigSettingsResponse(rsp)
 }
 
-// PutConfigSettingsWithBodyWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+// PutConfigSettingsWithBodyWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10747,7 +12572,7 @@ func (c *ClientWithResponses) PutConfigSettingsWithBodyWithResponse(ctx context.
 	return ParsePutConfigSettingsResponse(rsp)
 }
 
-// PutConfigSettingsWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
+// PutConfigSettingsWithResponse SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10812,7 +12637,98 @@ func (c *ClientWithResponses) GetConfigVersionsVWithResponse(ctx context.Context
 	return ParseGetConfigVersionsVResponse(rsp)
 }
 
-// GetGroupsWithResponse Group registry — the limit tree (parent chain, limits, child_default budget template)
+// GetExportWithResponse Every `export:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/admin/export (the `GetExport` operationId).
+func (c *ClientWithResponses) GetExportWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetExportResponse, error) {
+	rsp, err := c.GetExport(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExportResponse(rsp)
+}
+
+// DeleteExportNameWithResponse Remove one `export:` definition, refused while another config section still references it by bare name
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/admin/export/{name} (the `DeleteExportName` operationId).
+func (c *ClientWithResponses) DeleteExportNameWithResponse(ctx context.Context, name string, params *DeleteExportNameParams, reqEditors ...RequestEditorFn) (*DeleteExportNameResponse, error) {
+	rsp, err := c.DeleteExportName(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteExportNameResponse(rsp)
+}
+
+// GetExportNameWithResponse One `export:` definition
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/admin/export/{name} (the `GetExportName` operationId).
+func (c *ClientWithResponses) GetExportNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetExportNameResponse, error) {
+	rsp, err := c.GetExportName(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExportNameResponse(rsp)
+}
+
+// PutExportNameWithBodyWithResponse Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+func (c *ClientWithResponses) PutExportNameWithBodyWithResponse(ctx context.Context, name string, params *PutExportNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutExportNameResponse, error) {
+	rsp, err := c.PutExportNameWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutExportNameResponse(rsp)
+}
+
+// PutExportNameWithResponse Create or REPLACE one `export:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/export/{name} (the `PutExportName` operationId).
+func (c *ClientWithResponses) PutExportNameWithResponse(ctx context.Context, name string, params *PutExportNameParams, body PutExportNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutExportNameResponse, error) {
+	rsp, err := c.PutExportName(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutExportNameResponse(rsp)
+}
+
+// PatchExportNameSettingsWithBodyWithResponse Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+func (c *ClientWithResponses) PatchExportNameSettingsWithBodyWithResponse(ctx context.Context, name string, params *PatchExportNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchExportNameSettingsResponse, error) {
+	rsp, err := c.PatchExportNameSettingsWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchExportNameSettingsResponse(rsp)
+}
+
+// PatchExportNameSettingsWithResponse Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/export/{name}/settings (the `PatchExportNameSettings` operationId).
+func (c *ClientWithResponses) PatchExportNameSettingsWithResponse(ctx context.Context, name string, params *PatchExportNameSettingsParams, body PatchExportNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchExportNameSettingsResponse, error) {
+	rsp, err := c.PatchExportNameSettings(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchExportNameSettingsResponse(rsp)
+}
+
+// GetGroupsWithResponse Group registry: the limit tree (parent chain, limits, child_default budget template)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10825,7 +12741,7 @@ func (c *ClientWithResponses) GetGroupsWithResponse(ctx context.Context, reqEdit
 	return ParseGetGroupsResponse(rsp)
 }
 
-// PostGroupsWithBodyWithResponse Create (or replace) a group at runtime — live immediately (upsert)
+// PostGroupsWithBodyWithResponse Create (or replace) a group at runtime, live immediately (upsert)
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10838,7 +12754,7 @@ func (c *ClientWithResponses) PostGroupsWithBodyWithResponse(ctx context.Context
 	return ParsePostGroupsResponse(rsp)
 }
 
-// PostGroupsWithResponse Create (or replace) a group at runtime — live immediately (upsert)
+// PostGroupsWithResponse Create (or replace) a group at runtime, live immediately (upsert)
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10851,7 +12767,7 @@ func (c *ClientWithResponses) PostGroupsWithResponse(ctx context.Context, params
 	return ParsePostGroupsResponse(rsp)
 }
 
-// DeleteGroupsNameWithResponse Remove an overlay group at runtime — live immediately
+// DeleteGroupsNameWithResponse Remove an overlay group at runtime, live immediately
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10877,7 +12793,7 @@ func (c *ClientWithResponses) GetGroupsNameWithResponse(ctx context.Context, nam
 	return ParseGetGroupsNameResponse(rsp)
 }
 
-// PatchGroupsNameWithBodyWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+// PatchGroupsNameWithBodyWithResponse Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10890,7 +12806,7 @@ func (c *ClientWithResponses) PatchGroupsNameWithBodyWithResponse(ctx context.Co
 	return ParsePatchGroupsNameResponse(rsp)
 }
 
-// PatchGroupsNameWithResponse Partial update — change only the fields present (e.g. raise a budget, freeze a group)
+// PatchGroupsNameWithResponse Partial update: change only the fields present (e.g. raise a budget, freeze a group)
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10903,7 +12819,7 @@ func (c *ClientWithResponses) PatchGroupsNameWithResponse(ctx context.Context, n
 	return ParsePatchGroupsNameResponse(rsp)
 }
 
-// PutGroupsNameWithBodyWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
+// PutGroupsNameWithBodyWithResponse Replace an overlay group definition, live immediately (limits rebuilt)
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10916,7 +12832,7 @@ func (c *ClientWithResponses) PutGroupsNameWithBodyWithResponse(ctx context.Cont
 	return ParsePutGroupsNameResponse(rsp)
 }
 
-// PutGroupsNameWithResponse Replace an overlay group definition — live immediately (limits rebuilt)
+// PutGroupsNameWithResponse Replace an overlay group definition, live immediately (limits rebuilt)
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10929,7 +12845,7 @@ func (c *ClientWithResponses) PutGroupsNameWithResponse(ctx context.Context, nam
 	return ParsePutGroupsNameResponse(rsp)
 }
 
-// GetGroupsNameUsageWithResponse The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
+// GetGroupsNameUsageWithResponse The group's derived current-window usage per (window, pool) enforcement bucket vs its caps: the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -10955,7 +12871,7 @@ func (c *ClientWithResponses) GetHooksWithResponse(ctx context.Context, reqEdito
 	return ParseGetHooksResponse(rsp)
 }
 
-// PostHooksWithBodyWithResponse Register (or replace) a hook at runtime — live immediately
+// PostHooksWithBodyWithResponse Register (or replace) a hook at runtime, live immediately
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10968,7 +12884,7 @@ func (c *ClientWithResponses) PostHooksWithBodyWithResponse(ctx context.Context,
 	return ParsePostHooksResponse(rsp)
 }
 
-// PostHooksWithResponse Register (or replace) a hook at runtime — live immediately
+// PostHooksWithResponse Register (or replace) a hook at runtime, live immediately
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -10981,7 +12897,7 @@ func (c *ClientWithResponses) PostHooksWithResponse(ctx context.Context, params 
 	return ParsePostHooksResponse(rsp)
 }
 
-// DeleteHooksNameWithResponse Remove a hook at runtime — live immediately
+// DeleteHooksNameWithResponse Remove a hook at runtime, live immediately
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11007,7 +12923,7 @@ func (c *ClientWithResponses) GetHooksNameWithResponse(ctx context.Context, name
 	return ParseGetHooksNameResponse(rsp)
 }
 
-// PutHooksNameWithBodyWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+// PutHooksNameWithBodyWithResponse Replace an overlay hook definition, live immediately (grants immutable)
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11020,7 +12936,7 @@ func (c *ClientWithResponses) PutHooksNameWithBodyWithResponse(ctx context.Conte
 	return ParsePutHooksNameResponse(rsp)
 }
 
-// PutHooksNameWithResponse Replace an overlay hook definition — live immediately (grants immutable)
+// PutHooksNameWithResponse Replace an overlay hook definition, live immediately (grants immutable)
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11098,6 +13014,97 @@ func (c *ClientWithResponses) GetHooksNameStatusWithResponse(ctx context.Context
 	return ParseGetHooksNameStatusResponse(rsp)
 }
 
+// GetIdentityProvidersWithResponse Every `identity-providers:` DEFINITION (the 1.5.3 named-definition map: name -> {module, settings, ...}, referenced by bare name). Secrets are never projected
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/admin/identity-providers (the `GetIdentityProviders` operationId).
+func (c *ClientWithResponses) GetIdentityProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetIdentityProvidersResponse, error) {
+	rsp, err := c.GetIdentityProviders(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetIdentityProvidersResponse(rsp)
+}
+
+// DeleteIdentityProvidersNameWithResponse Remove one `identity-providers:` definition, refused while another config section still references it by bare name
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /api/v1/admin/identity-providers/{name} (the `DeleteIdentityProvidersName` operationId).
+func (c *ClientWithResponses) DeleteIdentityProvidersNameWithResponse(ctx context.Context, name string, params *DeleteIdentityProvidersNameParams, reqEditors ...RequestEditorFn) (*DeleteIdentityProvidersNameResponse, error) {
+	rsp, err := c.DeleteIdentityProvidersName(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteIdentityProvidersNameResponse(rsp)
+}
+
+// GetIdentityProvidersNameWithResponse One `identity-providers:` definition
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/admin/identity-providers/{name} (the `GetIdentityProvidersName` operationId).
+func (c *ClientWithResponses) GetIdentityProvidersNameWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetIdentityProvidersNameResponse, error) {
+	rsp, err := c.GetIdentityProvidersName(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetIdentityProvidersNameResponse(rsp)
+}
+
+// PutIdentityProvidersNameWithBodyWithResponse Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+func (c *ClientWithResponses) PutIdentityProvidersNameWithBodyWithResponse(ctx context.Context, name string, params *PutIdentityProvidersNameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutIdentityProvidersNameResponse, error) {
+	rsp, err := c.PutIdentityProvidersNameWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutIdentityProvidersNameResponse(rsp)
+}
+
+// PutIdentityProvidersNameWithResponse Create or REPLACE one `identity-providers:` definition (upsert), persisted to the config overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is 409 (edit config.yaml); RAISING `max_admin_scope` is refused outright (the trust ceiling is operator file policy)
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/admin/identity-providers/{name} (the `PutIdentityProvidersName` operationId).
+func (c *ClientWithResponses) PutIdentityProvidersNameWithResponse(ctx context.Context, name string, params *PutIdentityProvidersNameParams, body PutIdentityProvidersNameJSONRequestBody, reqEditors ...RequestEditorFn) (*PutIdentityProvidersNameResponse, error) {
+	rsp, err := c.PutIdentityProvidersName(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutIdentityProvidersNameResponse(rsp)
+}
+
+// PatchIdentityProvidersNameSettingsWithBodyWithResponse Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+func (c *ClientWithResponses) PatchIdentityProvidersNameSettingsWithBodyWithResponse(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PatchIdentityProvidersNameSettingsResponse, error) {
+	rsp, err := c.PatchIdentityProvidersNameSettingsWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchIdentityProvidersNameSettingsResponse(rsp)
+}
+
+// PatchIdentityProvidersNameSettingsWithResponse Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /api/v1/admin/identity-providers/{name}/settings (the `PatchIdentityProvidersNameSettings` operationId).
+func (c *ClientWithResponses) PatchIdentityProvidersNameSettingsWithResponse(ctx context.Context, name string, params *PatchIdentityProvidersNameSettingsParams, body PatchIdentityProvidersNameSettingsJSONRequestBody, reqEditors ...RequestEditorFn) (*PatchIdentityProvidersNameSettingsResponse, error) {
+	rsp, err := c.PatchIdentityProvidersNameSettings(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePatchIdentityProvidersNameSettingsResponse(rsp)
+}
+
 // GetInfoWithResponse Version, compiled-in plugin proof, uptime, topology
 //
 // Returns a wrapper object for the known response body format(s).
@@ -11111,7 +13118,7 @@ func (c *ClientWithResponses) GetInfoWithResponse(ctx context.Context, reqEditor
 	return ParseGetInfoResponse(rsp)
 }
 
-// GetKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
+// GetKeysWithResponse List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11150,7 +13157,7 @@ func (c *ClientWithResponses) PostKeysWithResponse(ctx context.Context, body Pos
 	return ParsePostKeysResponse(rsp)
 }
 
-// DeleteKeysIdWithResponse Revoke a key — it stops resolving immediately. Optional `If-Match` (the key's ETag)
+// DeleteKeysIdWithResponse Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11202,7 +13209,7 @@ func (c *ClientWithResponses) PatchKeysIdWithResponse(ctx context.Context, id st
 	return ParsePatchKeysIdResponse(rsp)
 }
 
-// PostKeysIdRevokeWithResponse REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
+// PostKeysIdRevokeWithResponse REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11267,7 +13274,7 @@ func (c *ClientWithResponses) GetOpenapiJsonWithResponse(ctx context.Context, re
 	return ParseGetOpenapiJsonResponse(rsp)
 }
 
-// DeleteOverlaySectionWithResponse DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
+// DeleteOverlaySectionWithResponse DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11319,7 +13326,7 @@ func (c *ClientWithResponses) PostPluginsWithResponse(ctx context.Context, body 
 	return ParsePostPluginsResponse(rsp)
 }
 
-// PostPluginsInspectWithBodyWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+// PostPluginsInspectWithBodyWithResponse Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11332,7 +13339,7 @@ func (c *ClientWithResponses) PostPluginsInspectWithBodyWithResponse(ctx context
 	return ParsePostPluginsInspectResponse(rsp)
 }
 
-// PostPluginsInspectWithResponse Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
+// PostPluginsInspectWithResponse Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11358,7 +13365,7 @@ func (c *ClientWithResponses) PostPluginsReloadWithResponse(ctx context.Context,
 	return ParsePostPluginsReloadResponse(rsp)
 }
 
-// PostPluginsRollbackWithBodyWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+// PostPluginsRollbackWithBodyWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11371,7 +13378,7 @@ func (c *ClientWithResponses) PostPluginsRollbackWithBodyWithResponse(ctx contex
 	return ParsePostPluginsRollbackResponse(rsp)
 }
 
-// PostPluginsRollbackWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
+// PostPluginsRollbackWithResponse EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11397,7 +13404,7 @@ func (c *ClientWithResponses) DeletePluginsFileWithResponse(ctx context.Context,
 	return ParseDeletePluginsFileResponse(rsp)
 }
 
-// GetPluginsFileSchemaWithResponse The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
+// GetPluginsFileSchemaWithResponse The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field, which works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11449,7 +13456,7 @@ func (c *ClientWithResponses) GetProvidersWithResponse(ctx context.Context, reqE
 	return ParseGetProvidersResponse(rsp)
 }
 
-// PostRestartWithBodyWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+// PostRestartWithBodyWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11462,7 +13469,7 @@ func (c *ClientWithResponses) PostRestartWithBodyWithResponse(ctx context.Contex
 	return ParsePostRestartResponse(rsp)
 }
 
-// PostRestartWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back
+// PostRestartWithResponse Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -11475,7 +13482,7 @@ func (c *ClientWithResponses) PostRestartWithResponse(ctx context.Context, body 
 	return ParsePostRestartResponse(rsp)
 }
 
-// PostSigningKeyRotateWithResponse ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
+// PostSigningKeyRotateWithResponse ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -11488,7 +13495,7 @@ func (c *ClientWithResponses) PostSigningKeyRotateWithResponse(ctx context.Conte
 	return ParsePostSigningKeyRotateResponse(rsp)
 }
 
-// GetUsageWithResponse Metering: current UTC-day bucket — {window, as_of, currency, total, by_model, by_key}, raw token split + derived spend_micros
+// GetUsageWithResponse Metering: current UTC-day bucket ({window, as_of, currency, total, by_model, by_key}), raw token split + derived spend_micros
 //
 // Returns a wrapper object for the known response body format(s).
 //
@@ -12368,6 +14375,321 @@ func ParseGetConfigVersionsVResponse(rsp *http.Response) (*GetConfigVersionsVRes
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExportResponse parses an HTTP response from a GetExportWithResponse call
+func ParseGetExportResponse(rsp *http.Response) (*GetExportResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExportResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PageNamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteExportNameResponse parses an HTTP response from a DeleteExportNameWithResponse call
+func ParseDeleteExportNameResponse(rsp *http.Response) (*DeleteExportNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteExportNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExportNameResponse parses an HTTP response from a GetExportNameWithResponse call
+func ParseGetExportNameResponse(rsp *http.Response) (*GetExportNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExportNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePutExportNameResponse parses an HTTP response from a PutExportNameWithResponse call
+func ParsePutExportNameResponse(rsp *http.Response) (*PutExportNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutExportNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePatchExportNameSettingsResponse parses an HTTP response from a PatchExportNameSettingsWithResponse call
+func ParsePatchExportNameSettingsResponse(rsp *http.Response) (*PatchExportNameSettingsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PatchExportNameSettingsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest Error
@@ -13378,6 +15700,321 @@ func ParseGetHooksNameStatusResponse(rsp *http.Response) (*GetHooksNameStatusRes
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetIdentityProvidersResponse parses an HTTP response from a GetIdentityProvidersWithResponse call
+func ParseGetIdentityProvidersResponse(rsp *http.Response) (*GetIdentityProvidersResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetIdentityProvidersResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PageNamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteIdentityProvidersNameResponse parses an HTTP response from a DeleteIdentityProvidersNameWithResponse call
+func ParseDeleteIdentityProvidersNameResponse(rsp *http.Response) (*DeleteIdentityProvidersNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteIdentityProvidersNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetIdentityProvidersNameResponse parses an HTTP response from a GetIdentityProvidersNameWithResponse call
+func ParseGetIdentityProvidersNameResponse(rsp *http.Response) (*GetIdentityProvidersNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetIdentityProvidersNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePutIdentityProvidersNameResponse parses an HTTP response from a PutIdentityProvidersNameWithResponse call
+func ParsePutIdentityProvidersNameResponse(rsp *http.Response) (*PutIdentityProvidersNameResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutIdentityProvidersNameResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePatchIdentityProvidersNameSettingsResponse parses an HTTP response from a PatchIdentityProvidersNameSettingsWithResponse call
+func ParsePatchIdentityProvidersNameSettingsResponse(rsp *http.Response) (*PatchIdentityProvidersNameSettingsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PatchIdentityProvidersNameSettingsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NamedDefView
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest Error
