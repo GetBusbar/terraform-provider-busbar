@@ -7,23 +7,35 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-// The config apply document, in busbar 1.5.0 config syntax: the {config,
+// The config apply document, in busbar 1.5.3 config syntax: the {config,
 // providers} envelope POSTed to /api/v1/admin/config/apply. It deliberately
-// mirrors the acceptance gateway's boot config (same auth chain, admin-tokens
-// env, providers, models, and the tfacc-group `groups:` entry the virtual-key
-// test binds to) so applying it never locks the suite out of the admin plane.
-// listen/admin_listen are omitted: an apply keeps the running listeners.
+// mirrors the acceptance gateway's boot config (same auth chain, identity
+// provider, signing key, providers, models, and the tfacc-group `groups:` entry
+// the virtual-key test binds to) so applying it never locks the suite out of the
+// admin plane. listen/admin_listen are omitted: an apply keeps the running
+// listeners.
+//
+// ⚠ An apply REPLACES the running config wholesale, so this document must be
+// boot-valid on its own — it carries the same two 1.5.x requirements the boot
+// config does:
+//   - `identity-providers:` DEFINES each provider once and `auth.admin_auth`
+//     references it BY BARE NAME. Inline module entries were retired in 1.5.3 and
+//     an apply carrying one is rejected 400 "invalid type: map, expected a string".
+//   - `auth.signing_key` is required whenever `auth.chain` names `keys`, and is
+//     read from the same env var the acceptance workflow gave the gateway process.
 const testAccConfigDoc = `
 provider "busbar" {}
 
 resource "busbar_config" "test" {
   document = jsonencode({
     config = {
+      "identity-providers" = {
+        admin-tokens = { module = "admin-tokens", token = { env = "BUSBAR_ADMIN_TOKEN" } }
+      }
       auth = {
-        chain = ["keys"]
-        admin_auth = [
-          { admin-tokens = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }
-        ]
+        chain       = ["keys"]
+        signing_key = { env = "BUSBAR_SIGNING_KEY" }
+        admin_auth  = ["admin-tokens"]
       }
       providers = {
         anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
