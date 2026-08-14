@@ -324,16 +324,26 @@ jobs:
           existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
             --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
 
+          # `rc` RATHER THAN IGNORING THE RESULT. If the escalation path itself breaks (label
+          # missing, `issues: write` revoked, API rate limit) that is its own incident: the
+          # acceptance failure is then real AND untracked, which is strictly worse than either
+          # alone. Same shape as validate-action's self-heal.yml, deliberately.
+          rc=0
           if [ -n "${existing:-}" ]; then
             echo "Reusing open issue #${existing} (idempotent: the daily cron must never file a second one)."
-            gh issue edit "$existing" --repo "$REPO" --title "$TITLE" --body-file "$body_file"
+            gh issue edit "$existing" --repo "$REPO" --title "$TITLE" --body-file "$body_file" || rc=1
             gh issue comment "$existing" --repo "$REPO" \
-              --body "Still failing as of $(date -u '+%Y-%m-%d %H:%M UTC'), now against busbar \`${CANDIDATE}\` — ${RUN_URL}"
+              --body "Still failing as of $(date -u '+%Y-%m-%d %H:%M UTC'), now against busbar \`${CANDIDATE}\` — ${RUN_URL}" || rc=1
             ISSUE_URL="${GITHUB_SERVER_URL}/${REPO}/issues/${existing}"
           else
+            # NOT `gh issue create ... 2>/dev/null | tail -1`. A pipeline's exit status is the LAST
+            # command's, so `tail` returning 0 makes a FAILED `gh issue create` indistinguishable
+            # from a successful one, and `2>/dev/null` throws away the reason it failed. The result
+            # was an empty ISSUE_URL in the annotation below and a notifier that had reached nobody
+            # while reporting that it had. Run gh on its own and read its status.
             ISSUE_URL="$(gh issue create --repo "$REPO" --title "$TITLE" \
-              --label "$LABEL" --label bug --body-file "$body_file" 2>/dev/null | tail -1)"
-            echo "Opened ${ISSUE_URL}"
+              --label "$LABEL" --label bug --body-file "$body_file")" || rc=1
+            echo "Opened ${ISSUE_URL:-<nothing: gh issue create failed, see above>}"
           fi
 
           # THE CI SIGNAL IS NOT THE ISSUE. The `acceptance` job is already red,
@@ -341,7 +351,8 @@ jobs:
           # cause readable from the run summary without opening the issue. Both
           # are kept deliberately -- the issue comes and finds a human, the red
           # run and the annotation are the signal for whoever is already looking.
-          echo "::error::Acceptance tests FAIL against busbar ${CANDIDATE}. Tracking issue: ${ISSUE_URL}"
+          echo "::error::Acceptance tests FAIL against busbar ${CANDIDATE}. Tracking issue: ${ISSUE_URL:-<none: could not be filed>}"
+          [ "$rc" = 0 ] || echo "::error::the acceptance-broken issue could not be filed or updated; the failure above is UNTRACKED. Fix: check this job's \`issues: write\` permission and the ${LABEL} label."
 
   # THE OTHER HALF OF IDEMPOTENCY, AND THE REASON THE PATTERN IS WORTH COPYING
   # RATHER THAN JUST DE-DUPLICATING THE CREATE. Without this, the issue is opened
