@@ -184,10 +184,18 @@ jobs:
           BUSBAR_ENDPOINT: http://localhost:8081
           BUSBAR_ADMIN_TOKEN: tfacc-admin-token
         # pipefail is required: without it the step's exit code is tee's (always
-        # 0), which once masked a 3/4-failing suite as a green run.
+        # 0), which once masked a 3/4-failing suite as a green run. The grep
+        # floor guards the other silent-green failure mode: `go test -run
+        # TestAcc` exits 0 with "no tests to run" when the pattern matches
+        # nothing (e.g. after a test rename), which would record a busbar
+        # release as "verified" by an empty suite.
         run: |
           set -o pipefail
           go test ./internal/provider/ -run TestAcc -v -timeout 30m 2>&1 | tee "$RUNNER_TEMP/acceptance.log"
+          if ! grep -q '^=== RUN   TestAcc' "$RUNNER_TEMP/acceptance.log"; then
+            echo "zero tests matched -run TestAcc — refusing to treat an empty suite as green"
+            exit 1
+          fi
 
       - name: gate on overall result
         id: gate
