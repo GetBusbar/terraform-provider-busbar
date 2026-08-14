@@ -55,7 +55,7 @@ resource "busbar_hook" "usage_tap" {
 - `on_error` (String) Behavior when the hook errors/times out: a terminal (weighted, reject, first, nothing) or another hook name. Defaults to nothing.
 - `priority` (Number) Ordering priority within a stage. Defaults to 0.
 - `prompt` (String) Prompt-content access grant: no, ro, or rw. Defaults to no. Immutable grant; changing it replaces the hook. (rw is invalid on a tap.)
-- `settings` (String) Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.
+- `settings` (String) Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}. The bag may carry SecretRefs, so busbar redacts it on every read (only the key names are echoed, as `settings_keys`); the provider keeps the last value it applied and detects drift by key names. Values changed outside Terraform with the SAME key set are invisible.
 - `timeout_ms` (Number) Per-call timeout in milliseconds. Defaults to 1.
 - `user` (String) Caller-identity access grant: no or ro. Defaults to no. Immutable grant; changing it replaces the hook.
 

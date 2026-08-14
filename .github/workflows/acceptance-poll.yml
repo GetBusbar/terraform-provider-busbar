@@ -133,10 +133,22 @@ jobs:
           cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
           listen: "127.0.0.1:8080"
           admin_listen: "127.0.0.1:8081"
+          # DEFINE each identity provider ONCE here; every chain references it BY BARE NAME.
+          # Inline module entries under `auth.admin_auth:` were retired in 1.5.3 and are now a hard
+          # boot error, so this shape is required for 1.5.3+ and accepted by 1.5.1/1.5.2 as well.
+          identity-providers:
+            admin-tokens: { module: admin-tokens, token: { env: "BUSBAR_ADMIN_TOKEN" } }
           auth:
             chain: [keys]
-            admin_auth:
-              - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+            # REQUIRED since busbar 1.5.1. 1.5.0 generated an ed25519 signing key on the fly when
+            # this was absent; 1.5.1 removed that, deliberately — a key the gateway invents is one
+            # nobody chose, cannot rotate, and silently changes on restart, invalidating every token
+            # it ever signed. With `chain: [keys]` naming the signed-token verifier, boot now FAILS
+            # CLOSED without it, which is what this acceptance poll caught (issue #8).
+            #
+            # Env-injected, like the admin token, so no key material sits in this file.
+            signing_key: { env: "BUSBAR_SIGNING_KEY" }
+            admin_auth: [admin-tokens]
           providers:
             anthropic:
               api_key: { env: "ANTHROPIC_API_KEY" }
@@ -146,7 +158,12 @@ jobs:
           groups:
             tfacc-group: {}
           YAML
+          # A throwaway key for this ephemeral runner, minted by the binary under test rather than
+          # hardcoded: a literal here would be a real ed25519 secret committed to a public repo, and
+          # generating it proves `--generate-signing-key` still emits what the config loader accepts.
+          BUSBAR_SIGNING_KEY="$(./busbar-src/target/release/busbar --generate-signing-key | tr -d '[:space:]')"
           ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+            BUSBAR_SIGNING_KEY="$BUSBAR_SIGNING_KEY" \
             BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
             BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
             ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
@@ -170,10 +187,18 @@ jobs:
           BUSBAR_ENDPOINT: http://localhost:8081
           BUSBAR_ADMIN_TOKEN: tfacc-admin-token
         # pipefail is required: without it the step's exit code is tee's (always
-        # 0), which once masked a 3/4-failing suite as a green run.
+        # 0), which once masked a 3/4-failing suite as a green run. The grep
+        # floor guards the other silent-green failure mode: `go test -run
+        # TestAcc` exits 0 with "no tests to run" when the pattern matches
+        # nothing (e.g. after a test rename), which would record a busbar
+        # release as "verified" by an empty suite.
         run: |
           set -o pipefail
           go test ./internal/provider/ -run TestAcc -v -timeout 30m 2>&1 | tee "$RUNNER_TEMP/acceptance.log"
+          if ! grep -q '^=== RUN   TestAcc' "$RUNNER_TEMP/acceptance.log"; then
+            echo "zero tests matched -run TestAcc — refusing to treat an empty suite as green"
+            exit 1
+          fi
 
       - name: gate on overall result
         id: gate
