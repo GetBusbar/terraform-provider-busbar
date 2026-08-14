@@ -38,6 +38,9 @@ resource "busbar_hook" "test" {
 					resource.TestCheckResourceAttr("busbar_hook.test", "priority", "3"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "prompt", "no"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "on_error", "nothing"),
+					// Reads redact settings to key names (settings_keys), so
+					// state must carry exactly the value this apply sent.
+					resource.TestCheckResourceAttr("busbar_hook.test", "settings", `{"threshold":0.5}`),
 				),
 			},
 			// Replace in place (PUT): change timeout, priority, and settings.
@@ -59,6 +62,7 @@ resource "busbar_hook" "test" {
 					resource.TestCheckResourceAttr("busbar_hook.test", "timeout_ms", "120"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "priority", "9"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "on_error", "reject"),
+					resource.TestCheckResourceAttr("busbar_hook.test", "settings", `{"threshold":0.9}`),
 				),
 			},
 			// Import by name (the hook's identity is its name, not a synthetic id).
@@ -68,7 +72,14 @@ resource "busbar_hook" "test" {
 				ImportStateId:                        "tfacc-hook",
 				ImportStateVerify:                    true,
 				ImportStateVerifyIdentifierAttribute: "name",
-				ImportStateVerifyIgnore:              []string{"on_empty", "default"},
+				// on_empty/default are write-only. settings VALUES are
+				// unrecoverable on import by API contract: since busbar 1.5.3
+				// every hook read redacts the bag to key names (settings_keys)
+				// because it may carry SecretRefs, so the imported state cannot
+				// contain the values the pre-import state had. The value
+				// round-trip itself is still fully asserted by the
+				// TestCheckResourceAttr("settings", ...) checks in steps 1-2.
+				ImportStateVerifyIgnore: []string{"on_empty", "default", "settings"},
 			},
 		},
 	})

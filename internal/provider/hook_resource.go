@@ -84,18 +84,24 @@ type putHookReq struct {
 }
 
 // hookView is the read/mutation response projection (busbar HookView).
+//
+// Since busbar 1.5.3 the settings bag is REDACTED on every read: HookView
+// carries `settings_keys` (the sorted KEY NAMES, no values) instead of the old
+// `settings` object, because a hook's settings bag is a SecretRef carrier by
+// design. The provider therefore keeps the last-applied `settings` value in
+// state and uses `settings_keys` only to detect drift at key granularity.
 type hookView struct {
-	Name      string          `json:"name"`
-	Kind      string          `json:"kind"`
-	Transport hookTransport   `json:"transport"`
-	Prompt    string          `json:"prompt"`
-	User      string          `json:"user"`
-	Priority  int64           `json:"priority"`
-	At        *string         `json:"at"`
-	OnError   string          `json:"on_error"`
-	TimeoutMS int64           `json:"timeout_ms"`
-	Settings  json.RawMessage `json:"settings"`
-	Global    bool            `json:"global"`
+	Name         string        `json:"name"`
+	Kind         string        `json:"kind"`
+	Transport    hookTransport `json:"transport"`
+	Prompt       string        `json:"prompt"`
+	User         string        `json:"user"`
+	Priority     int64         `json:"priority"`
+	At           *string       `json:"at"`
+	OnError      string        `json:"on_error"`
+	TimeoutMS    int64         `json:"timeout_ms"`
+	SettingsKeys []string      `json:"settings_keys"`
+	Global       bool          `json:"global"`
 }
 
 type hookTransport struct {
@@ -175,9 +181,12 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Description: "Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Write-only (not echoed by reads).",
 			},
 			"settings": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.",
+				Optional: true,
+				Computed: true,
+				Description: "Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}. " +
+					"The bag may carry SecretRefs, so busbar redacts it on every read (only the key names are " +
+					"echoed, as `settings_keys`); the provider keeps the last value it applied and detects " +
+					"drift by key names. Values changed outside Terraform with the SAME key set are invisible.",
 			},
 			"global": schema.BoolAttribute{
 				Optional:    true,
@@ -281,6 +290,13 @@ func (r *hookResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 	applyHookView(&plan, &view)
+	// settings is never echoed back (redacted to settings_keys since busbar
+	// 1.5.3), so state keeps the exact value this apply sent. When the config
+	// left it unset the server defaulted the bag to {}, which is the value the
+	// Computed attribute must resolve to.
+	if plan.Settings.IsNull() || plan.Settings.IsUnknown() {
+		plan.Settings = types.StringValue("{}")
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -314,6 +330,19 @@ func (r *hookResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 	applyHookView(&state, &view)
+	// The read is redacted: settings comes back as key names only
+	// (settings_keys). Keep the last-applied value when its key set still
+	// matches; on a key-set mismatch the bag drifted outside Terraform, so
+	// null it to surface an update in the next plan. After import there is no
+	// prior value at all — resolve an empty server bag to "{}" and otherwise
+	// leave it null (the values are unrecoverable by API contract).
+	if state.Settings.IsNull() || state.Settings.IsUnknown() {
+		if len(view.SettingsKeys) == 0 {
+			state.Settings = types.StringValue("{}")
+		}
+	} else if !settingsKeysMatch(state.Settings.ValueString(), view.SettingsKeys) {
+		state.Settings = types.StringNull()
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -350,6 +379,11 @@ func (r *hookResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 	applyHookView(&plan, &view)
+	// Same contract as Create: the response redacts settings, so the applied
+	// plan value (or the server's {} default when unset) is the state value.
+	if plan.Settings.IsNull() || plan.Settings.IsUnknown() {
+		plan.Settings = types.StringValue("{}")
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -375,13 +409,17 @@ func (r *hookResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 
 // ImportState brings an existing hook under management by name. The write-only
 // fields (on_empty, default) are not echoed by reads and stay null after import.
+// settings values are likewise unrecoverable (reads redact them to key names),
+// so a non-empty imported bag stays null until the first apply rewrites it.
 func (r *hookResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
 // applyHookView folds a HookView projection back onto the model. The read shape
 // carries the plugin as transport{kind:"plugin",target}, so project it back and
-// leave the write-only fields (on_empty, default) untouched.
+// leave the write-only fields (on_empty, default) untouched. settings is also
+// left untouched here: reads redact it to settings_keys, and each caller
+// resolves state.settings against that projection (see Create/Read/Update).
 func applyHookView(m *hookModel, v *hookView) {
 	m.Name = types.StringValue(v.Name)
 	m.Kind = types.StringValue(v.Kind)
@@ -397,10 +435,24 @@ func applyHookView(m *hookModel, v *hookView) {
 	m.Priority = types.Int64Value(v.Priority)
 	m.At = optString(v.At)
 	m.Global = types.BoolValue(v.Global)
-	// settings: normalize to a compact JSON string; empty object stays as "{}".
-	if len(v.Settings) == 0 || string(v.Settings) == "null" {
-		m.Settings = types.StringValue("{}")
-	} else {
-		m.Settings = types.StringValue(string(v.Settings))
+}
+
+// settingsKeysMatch reports whether the JSON object in the state's settings
+// string has exactly the key set busbar's redacted settings_keys projection
+// reports. A non-object bag (busbar forwards those verbatim) has no comparable
+// key projection, so it is treated as in-sync rather than perpetually drifted.
+func settingsKeysMatch(settings string, keys []string) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(settings), &obj); err != nil {
+		return true
 	}
+	if len(obj) != len(keys) {
+		return false
+	}
+	for _, k := range keys {
+		if _, ok := obj[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
