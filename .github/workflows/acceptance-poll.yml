@@ -40,10 +40,13 @@ name: acceptance-poll
 #                    against" marker — recording it publishes nothing and tags
 #                    nothing; whether a provider release is warranted stays a
 #                    human decision.
-#   - Tests FAIL  -> open an issue (not a PR) with the failure output, so the
-#                    incompatibility is visible without blocking anything or
-#                    publishing anything broken. ACCEPTANCE_BUSBAR_VERSION is
-#                    left untouched.
+#   - Tests FAIL  -> maintain THE ONE open `acceptance-broken` issue (edit it and
+#                    comment if it exists, open it only if it does not) with the
+#                    failure output, so the incompatibility is visible without
+#                    blocking anything or publishing anything broken.
+#                    ACCEPTANCE_BUSBAR_VERSION is left untouched. A later PASS
+#                    closes that issue, so the tracker never carries a stale
+#                    "we are broken" claim. See the two jobs at the bottom.
 #
 # Daily (self-healing -- a missed run just catches up next time), on-demand,
 # and instantly on an upstream release via repository_dispatch.
@@ -226,28 +229,170 @@ jobs:
   # boot/test step failure), the default success() gate would SKIP this job and
   # the failure would never surface as an issue. always() + (job failed OR the
   # gate step said fail) makes the failure path actually reachable.
+  #
+  # -- ONE ISSUE, REUSED. THIS USED TO FILE A NEW ONE EVERY RUN ---------------
+  # This job called `gh issue create` unconditionally, on a DAILY cron, on a
+  # PUBLIC repo. It had filed FOURTEEN issues (#2..#8, #10..#16) saying the same
+  # thing across three busbar releases: three for v1.5.1, five for v1.5.2, six
+  # for v1.5.3 and counting. Every one of them is a true report -- the suite
+  # really is failing -- so the defect is not the reporting, it is that the
+  # reporting has no memory. A tracker where one open incident is represented by
+  # N issues is a tracker nobody can read: the newest report of a week-old
+  # problem looks like a new problem, and the fourteen together look like
+  # fourteen.
+  #
+  # The pattern below is ported verbatim in shape from GetBusbar/busbar's
+  # .github/workflows/verify-deploy.yml `alert` job: search for an open issue by
+  # LABEL, edit + comment on it if one exists, create one only if none does.
+  #
+  # THE LABEL IS THE IDENTITY, AND IT IS DELIBERATELY NOT `bug`. The search key
+  # has to be something ONLY this workflow ever applies. The old code labelled
+  # these `bug`, which is also what a human files, so reusing on `bug` would let
+  # this job silently overwrite the title and body of a hand-written issue. A
+  # dedicated `acceptance-broken` label is owned by this job and by nothing else.
+  # `bug` is still applied on create, for triage, but is never searched on.
+  #
+  # WHY NOT KEY ON THE CANDIDATE VERSION. Filing one issue per busbar release
+  # would still be four issues for what is, in this case, one unresolved
+  # incompatibility that has simply outlived three releases. The incident is "the
+  # acceptance suite does not pass against current busbar", and the version it
+  # last failed against is a PROPERTY of that incident, so it lives in the title
+  # and body, which are rewritten on every run.
   open-issue-on-fail:
     needs: [check, acceptance]
     if: always() && needs.check.outputs.run == 'true' && (needs.acceptance.result == 'failure' || needs.acceptance.outputs.result == 'fail')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE: ${{ needs.check.outputs.candidate }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      LABEL: acceptance-broken
     steps:
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE: ${{ needs.check.outputs.candidate }}
+      - name: Open or update the single open acceptance-broken issue
         run: |
-          set -euo pipefail
+          # `set +e` FIRST. GitHub runs every `run:` block as `bash -e {0}`, so
+          # errexit is already on before line 1 and `set -uo pipefail` does not
+          # turn it off. Without this, a non-fatal `gh` hiccup (a label that
+          # already exists, a transient API 502) would abort the step BEFORE the
+          # ::error:: annotation below is emitted, and the run would go red with
+          # no statement of what broke.
+          set +e
+          set -uo pipefail
+
+          TITLE="[acceptance-broken] Acceptance tests fail against busbar ${CANDIDATE}"
+          # A stable marker so the body is unambiguously machine-written and
+          # therefore safe for this job to overwrite wholesale.
+          MARKER="<!-- acceptance-poll-alert -->"
           body_file="$(mktemp)"
           {
+            echo "$MARKER"
+            echo
             echo "The daily acceptance-poll workflow tried to build busbar \`${CANDIDATE}\` from source, boot it, and run this provider's TestAcc suite against it. It did not pass (build, boot, or the acceptance tests themselves failed)."
             echo
             echo "This is exactly the kind of incompatibility this workflow exists to catch before a broken provider release ships — most likely \`${CANDIDATE}\` changed part of the admin API surface (request/response shapes, config syntax, or boot behavior) that this provider depends on."
             echo
-            echo ".github/ACCEPTANCE_BUSBAR_VERSION was left unchanged, so this will keep re-flagging on every daily run until it's resolved or superseded by a newer busbar release."
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| busbar release under test | \`${CANDIDATE}\` |"
+            echo "| failing run | ${RUN_URL} |"
+            echo "| triggered by | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| last checked | $(date -u '+%Y-%m-%d %H:%M UTC') |"
             echo
-            echo "Run (see the uploaded acceptance-failure artifact for logs): ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ".github/ACCEPTANCE_BUSBAR_VERSION was left unchanged, so the suite will keep re-checking on every daily run until this is resolved."
+            echo
+            echo "Logs are in the \`acceptance-failure-${CANDIDATE}\` artifact on the run above (14-day retention)."
+            echo
+            echo "---"
+            echo
+            echo "**This issue is reused, not duplicated.** Every later failure retitles it, rewrites"
+            echo "this body and adds a comment, so one open incident stays one issue however many"
+            echo "busbar releases it outlives. It closes itself when the suite passes."
           } > "$body_file"
-          gh issue create \
-            --repo "${{ github.repository }}" \
-            --title "Acceptance tests fail against busbar ${CANDIDATE}" \
-            --body-file "$body_file" \
-            --label bug || true
+
+          # The label is what makes reuse work, so create it rather than assume
+          # it exists. Failure here is non-fatal: the overwhelmingly common cause
+          # is that it already exists.
+          gh label create "$LABEL" --repo "$REPO" \
+            --color B60205 \
+            --description "The TestAcc suite does not pass against current busbar (auto-filed)" \
+            >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+
+          # `rc` RATHER THAN IGNORING THE RESULT. If the escalation path itself breaks (label
+          # missing, `issues: write` revoked, API rate limit) that is its own incident: the
+          # acceptance failure is then real AND untracked, which is strictly worse than either
+          # alone. Same shape as validate-action's self-heal.yml, deliberately.
+          rc=0
+          if [ -n "${existing:-}" ]; then
+            echo "Reusing open issue #${existing} (idempotent: the daily cron must never file a second one)."
+            gh issue edit "$existing" --repo "$REPO" --title "$TITLE" --body-file "$body_file" || rc=1
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Still failing as of $(date -u '+%Y-%m-%d %H:%M UTC'), now against busbar \`${CANDIDATE}\` — ${RUN_URL}" || rc=1
+            ISSUE_URL="${GITHUB_SERVER_URL}/${REPO}/issues/${existing}"
+          else
+            # NOT `gh issue create ... 2>/dev/null | tail -1`. A pipeline's exit status is the LAST
+            # command's, so `tail` returning 0 makes a FAILED `gh issue create` indistinguishable
+            # from a successful one, and `2>/dev/null` throws away the reason it failed. The result
+            # was an empty ISSUE_URL in the annotation below and a notifier that had reached nobody
+            # while reporting that it had. Run gh on its own and read its status.
+            ISSUE_URL="$(gh issue create --repo "$REPO" --title "$TITLE" \
+              --label "$LABEL" --label bug --body-file "$body_file")" || rc=1
+            echo "Opened ${ISSUE_URL:-<nothing: gh issue create failed, see above>}"
+          fi
+
+          # THE CI SIGNAL IS NOT THE ISSUE. The `acceptance` job is already red,
+          # which is what turns the run red; this annotation is what makes the
+          # cause readable from the run summary without opening the issue. Both
+          # are kept deliberately -- the issue comes and finds a human, the red
+          # run and the annotation are the signal for whoever is already looking.
+          echo "::error::Acceptance tests FAIL against busbar ${CANDIDATE}. Tracking issue: ${ISSUE_URL:-<none: could not be filed>}"
+          [ "$rc" = 0 ] || echo "::error::the acceptance-broken issue could not be filed or updated; the failure above is UNTRACKED. Fix: check this job's \`issues: write\` permission and the ${LABEL} label."
+
+  # THE OTHER HALF OF IDEMPOTENCY, AND THE REASON THE PATTERN IS WORTH COPYING
+  # RATHER THAN JUST DE-DUPLICATING THE CREATE. Without this, the issue is opened
+  # once and lives forever: a stale open "acceptance is broken" issue is worse
+  # than none, because the next real breakage looks like the old one and gets
+  # ignored. A run in which the suite actually passes closes it and says why.
+  #
+  # GATED ON A REAL PASS, NOT ON `run == false`. When `check` reports run=false
+  # the suite did NOT execute this cycle -- the marker simply already names the
+  # current busbar release. That is the absence of evidence, not evidence of a
+  # fix, and closing on it would let a cron in which nothing ran wipe out a
+  # finding that a cron which did run had recorded. Only `result == 'pass'`,
+  # which means this run really did build busbar, boot it and drive the full
+  # Create->Read->Update->Delete->Import suite against it, closes the issue.
+  close-issue-on-pass:
+    needs: [check, acceptance]
+    if: always() && needs.check.outputs.run == 'true' && needs.acceptance.outputs.result == 'pass'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE: ${{ needs.check.outputs.candidate }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      LABEL: acceptance-broken
+    steps:
+      - name: Close any open acceptance-broken issue
+        run: |
+          set +e
+          set -uo pipefail
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -z "${existing:-}" ]; then
+            echo "No open ${LABEL} issue. Nothing to close."
+            exit 0
+          fi
+          gh issue comment "$existing" --repo "$REPO" \
+            --body "The acceptance suite is GREEN again as of $(date -u '+%Y-%m-%d %H:%M UTC'): busbar \`${CANDIDATE}\` was built from source, booted, and the full Create→Read→Update→Delete→Import TestAcc suite passed against it. Closing. Run: ${RUN_URL}"
+          gh issue close "$existing" --repo "$REPO" --reason completed
+          echo "Closed #${existing}."
