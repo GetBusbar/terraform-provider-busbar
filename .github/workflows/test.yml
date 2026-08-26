@@ -36,6 +36,27 @@ jobs:
           }
       - run: go test ./... -v
 
+  # Coverage (non-required, informational). Runs UNIT tests only — TF_ACC is left
+  # unset, so the SDK skips the TestAcc acceptance lifecycle. Uploads to Codecov
+  # tokenless; never gates CI (fail_ci_if_error: false).
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: unit tests with coverage
+        run: go test ./... -covermode=atomic -coverprofile=coverage.out
+      - name: upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          slug: GetBusbar/terraform-provider-busbar
+          fail_ci_if_error: false
+
   # Acceptance tests: the real Create->Read->Update->Delete->Import lifecycle
   # against a live busbar gateway.
   #

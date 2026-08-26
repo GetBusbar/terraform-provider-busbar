@@ -1,5 +1,7 @@
 # terraform-provider-busbar
 
+[![codecov](https://codecov.io/gh/GetBusbar/terraform-provider-busbar/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/terraform-provider-busbar)
+
 Terraform provider for the [busbar](https://github.com/GetBusbar) LLM gateway, driving
 its admin API.
 
