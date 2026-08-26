@@ -1,5 +1,9 @@
 # terraform-provider-busbar
 
+[![CI](https://github.com/GetBusbar/terraform-provider-busbar/actions/workflows/test.yml/badge.svg)](https://github.com/GetBusbar/terraform-provider-busbar/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/GetBusbar/terraform-provider-busbar/branch/main/graph/badge.svg)](https://codecov.io/gh/GetBusbar/terraform-provider-busbar)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Terraform provider for the [busbar](https://github.com/GetBusbar) LLM gateway, driving
 its admin API.
 
