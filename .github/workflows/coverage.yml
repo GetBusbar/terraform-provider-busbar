@@ -1,0 +1,38 @@
+name: coverage
+
+# Non-gating Codecov coverage. Separate from test.yml so it can never affect
+# the required checks. Runs the UNIT tests only: TF_ACC is unset, so the
+# acceptance suite (which needs a live gateway) is skipped, exactly like the
+# unit-test job in test.yml. The whole job is continue-on-error and the upload
+# is fail_ci_if_error: false, so a coverage hiccup never blocks a merge.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with coverage
+        run: go test -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: ${{ github.repository }}
+          files: coverage.txt
+          fail_ci_if_error: false
