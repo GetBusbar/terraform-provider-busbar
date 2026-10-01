@@ -51,7 +51,7 @@ jobs:
       - name: unit tests with coverage
         run: go test ./... -covermode=atomic -coverprofile=coverage.out
       - name: upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
