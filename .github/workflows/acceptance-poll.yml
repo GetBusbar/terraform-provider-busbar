@@ -94,7 +94,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.10.*"
           terraform_wrapper: false
@@ -173,7 +173,7 @@ jobs:
 
       - name: upload failure log
         if: steps.gate.outputs.result == 'fail'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: acceptance-failure-${{ needs.check.outputs.candidate }}
           path: |
