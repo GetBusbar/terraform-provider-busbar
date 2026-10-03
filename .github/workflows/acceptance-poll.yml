@@ -64,7 +64,7 @@ jobs:
       candidate: ${{ steps.compare.outputs.candidate }}
       run: ${{ steps.compare.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: compare
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,8 +89,8 @@ jobs:
     outputs:
       result: ${{ steps.gate.outputs.result }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -100,7 +100,7 @@ jobs:
           terraform_wrapper: false
 
       - name: checkout busbar at candidate release
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ needs.check.outputs.candidate }}
@@ -187,7 +187,7 @@ jobs:
     if: needs.check.outputs.run == 'true' && needs.acceptance.outputs.result == 'pass'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ needs.check.outputs.candidate }}
