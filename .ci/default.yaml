@@ -1,0 +1,154 @@
+# Imported from .github/workflows/test.yml by `modernci import github`.
+to: dev
+on:
+  move:
+  - acceptance-1-9
+  - acceptance-1-10
+  - build
+  - coverage
+  push:
+  - acceptance-1-9
+  - acceptance-1-10
+  - build
+  - coverage
+  landed:
+  - acceptance-1-9
+  - acceptance-1-10
+  - build
+  - coverage
+checks:
+  acceptance-1-9:
+    # TF_ACC lifecycle tests against a live busbar gateway built from GetBusbar/busbar source (Terraform 1.9.*).
+    run: |
+      set -e
+      TFV=1.9.8
+      TD=$(mktemp -d)
+      os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac
+      curl -fsSL -o "$TD/tf.zip" "https://releases.hashicorp.com/terraform/$TFV/terraform_${TFV}_${os}_${arch}.zip"
+      (cd "$TD" && unzip -q tf.zip)
+      export PATH="$TD:$PATH"
+      terraform version
+      export TF_ACC_TERRAFORM_PATH="$TD/terraform"
+      export GITHUB_WORKSPACE="$PWD"
+      export RUNNER_TEMP="${TMPDIR:-/tmp}"
+      git clone --depth 1 https://github.com/GetBusbar/busbar.git busbar-src
+      (cd busbar-src && cargo build --release -p busbar)
+      mkdir -p "$RUNNER_TEMP/busbar"
+      cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
+      admin_listen: "0.0.0.0:8081"
+      admin_insecure: true
+      models:
+        test-model:
+          provider: anthropic
+          max_concurrent: 1
+          max_requests: -1
+      providers:
+        anthropic:
+          api_key: { env: "ANTHROPIC_API_KEY" }
+      auth:
+        chain: [keys]
+        admin_auth:
+          - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+      YAML
+      ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+        BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
+        BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
+        ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
+      gw=$!
+      trap 'kill $gw 2>/dev/null || true' EXIT
+      up=0
+      for i in $(seq 1 30); do
+        if curl -sf http://localhost:8081/api/v1/admin/info -H "x-admin-token: tfacc-admin-token" >/dev/null; then
+          echo "gateway up"; up=1; break
+        fi
+        sleep 2
+      done
+      if [ "$up" != 1 ]; then echo "gateway did not become ready"; cat "$RUNNER_TEMP/busbar/busbar.log"; exit 1; fi
+      TF_ACC="1" BUSBAR_ENDPOINT="http://localhost:8081" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" go test ./internal/provider/ -run TestAcc -v -timeout 30m
+    requires:
+    - go
+    - cargo
+  acceptance-1-10:
+    # TF_ACC lifecycle tests against a live busbar gateway built from GetBusbar/busbar source (Terraform 1.10.*).
+    run: |
+      set -e
+      TFV=1.10.5
+      TD=$(mktemp -d)
+      os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac
+      curl -fsSL -o "$TD/tf.zip" "https://releases.hashicorp.com/terraform/$TFV/terraform_${TFV}_${os}_${arch}.zip"
+      (cd "$TD" && unzip -q tf.zip)
+      export PATH="$TD:$PATH"
+      terraform version
+      export TF_ACC_TERRAFORM_PATH="$TD/terraform"
+      export GITHUB_WORKSPACE="$PWD"
+      export RUNNER_TEMP="${TMPDIR:-/tmp}"
+      git clone --depth 1 https://github.com/GetBusbar/busbar.git busbar-src
+      (cd busbar-src && cargo build --release -p busbar)
+      mkdir -p "$RUNNER_TEMP/busbar"
+      cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
+      admin_listen: "0.0.0.0:8081"
+      admin_insecure: true
+      models:
+        test-model:
+          provider: anthropic
+          max_concurrent: 1
+          max_requests: -1
+      providers:
+        anthropic:
+          api_key: { env: "ANTHROPIC_API_KEY" }
+      auth:
+        chain: [keys]
+        admin_auth:
+          - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+      YAML
+      ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+        BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
+        BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
+        ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
+      gw=$!
+      trap 'kill $gw 2>/dev/null || true' EXIT
+      up=0
+      for i in $(seq 1 30); do
+        if curl -sf http://localhost:8081/api/v1/admin/info -H "x-admin-token: tfacc-admin-token" >/dev/null; then
+          echo "gateway up"; up=1; break
+        fi
+        sleep 2
+      done
+      if [ "$up" != 1 ]; then echo "gateway did not become ready"; cat "$RUNNER_TEMP/busbar/busbar.log"; exit 1; fi
+      TF_ACC="1" BUSBAR_ENDPOINT="http://localhost:8081" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" go test ./internal/provider/ -run TestAcc -v -timeout 30m
+    requires:
+    - go
+    - cargo
+  build:
+    run: |
+      set -e
+      go build ./... </dev/null
+      go vet ./... </dev/null
+      # gofmt (must be clean)
+      ( bash -e /dev/fd/3 3<<'MODERNCI_STEP' </dev/null
+      unformatted="$(gofmt -l .)"
+      if [ -n "$unformatted" ]; then
+        echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+      fi
+      MODERNCI_STEP
+      )
+      # docs are up to date
+      ( bash -e /dev/fd/3 3<<'MODERNCI_STEP' </dev/null
+      go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name busbar
+      git diff --exit-code -- docs/ || {
+        echo "docs/ is stale — run 'make docs' and commit the result"; exit 1;
+      }
+      MODERNCI_STEP
+      )
+      go test ./... -v </dev/null
+    requires:
+    - go
+  coverage:
+    run: |
+      set -e
+      # unit tests with coverage
+      go test ./... -covermode=atomic -coverprofile=coverage.out </dev/null
+    requires:
+    - go
+env:
+  CI: 'true'
