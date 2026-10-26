@@ -144,6 +144,9 @@ checks:
       tag="$(curl -fsSL https://api.github.com/repos/GetBusbar/busbar/releases/latest | jq -r .tag_name)"
       echo "acceptance against busbar release $tag"
       git clone --depth 1 --branch "$tag" https://github.com/GetBusbar/busbar.git busbar-src
+      # the machine has rustup but no default toolchain
+      rustup toolchain install stable --profile minimal >/dev/null
+      rustup default stable >/dev/null
       (cd busbar-src && cargo build --release -p busbar)
       mkdir -p "$RUNNER_TEMP/busbar"
       cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
