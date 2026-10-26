@@ -16,6 +16,12 @@ on:
   - acceptance-1-10
   - build
   - coverage
+  manual:
+  - acceptance-poll
+  upstream:
+  - from: GetBusbar/busbar@v*
+    checks:
+    - acceptance-poll
 checks:
   acceptance-1-9:
     # TF_ACC lifecycle tests against a live busbar gateway built from GetBusbar/busbar source (Terraform 1.9.*).
@@ -119,6 +125,63 @@ checks:
     requires:
     - go
     - cargo
+  acceptance-poll:
+    # Replaces .github/workflows/acceptance-poll.yml. On every busbar release (upstream) or on demand: build the
+    # newest busbar RELEASE from source and run the TF_ACC suite against it. Red = incompatible (it shows in `events`,
+    # it blocks nothing); green = verified. Replaces the workflow's PR (pass) / issue (fail) with the recorded event.
+    run: |
+      set -e
+      TFV=1.10.5
+      TD=$(mktemp -d)
+      os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac
+      curl -fsSL -o "$TD/tf.zip" "https://releases.hashicorp.com/terraform/$TFV/terraform_${TFV}_${os}_${arch}.zip"
+      (cd "$TD" && unzip -q tf.zip)
+      export PATH="$TD:$PATH"
+      terraform version
+      export TF_ACC_TERRAFORM_PATH="$TD/terraform"
+      export GITHUB_WORKSPACE="$PWD"
+      export RUNNER_TEMP="${TMPDIR:-/tmp}"
+      tag="$(curl -fsSL https://api.github.com/repos/GetBusbar/busbar/releases/latest | jq -r .tag_name)"
+      echo "acceptance against busbar release $tag"
+      git clone --depth 1 --branch "$tag" https://github.com/GetBusbar/busbar.git busbar-src
+      (cd busbar-src && cargo build --release -p busbar)
+      mkdir -p "$RUNNER_TEMP/busbar"
+      cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
+      admin_listen: "0.0.0.0:8081"
+      admin_insecure: true
+      models:
+        test-model:
+          provider: anthropic
+          max_concurrent: 1
+          max_requests: -1
+      providers:
+        anthropic:
+          api_key: { env: "ANTHROPIC_API_KEY" }
+      auth:
+        chain: [keys]
+        admin_auth:
+          - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+      YAML
+      ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
+        BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
+        BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
+        ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
+      gw=$!
+      trap 'kill $gw 2>/dev/null || true' EXIT
+      up=0
+      for i in $(seq 1 30); do
+        if curl -sf http://localhost:8081/api/v1/admin/info -H "x-admin-token: tfacc-admin-token" >/dev/null; then
+          echo "gateway up"; up=1; break
+        fi
+        sleep 2
+      done
+      if [ "$up" != 1 ]; then echo "gateway did not become ready"; cat "$RUNNER_TEMP/busbar/busbar.log"; exit 1; fi
+      TF_ACC="1" BUSBAR_ENDPOINT="http://localhost:8081" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" go test ./internal/provider/ -run TestAcc -v -timeout 30m
+    requires:
+    - go
+    - cargo
+    - curl
+    - jq
   build:
     run: |
       set -e
