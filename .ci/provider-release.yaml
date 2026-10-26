@@ -1,0 +1,106 @@
+# Replaces .github/workflows/release.yml (tag v* -> GoReleaser) and release-on-upstream.yml (daily:
+# cut a patch tag when busbar core released) of GetBusbar/terraform-provider-busbar. GitHub Actions
+# is retired.
+#
+# Named `provider-release` on purpose: no such branch exists, so it never judges a PR. It carries
+# `to: main` scheduled/tag work. Its one `move` check (provider-files-present) exists only because
+# the file checker requires a move check.
+#
+#   provider-recut   schedule daily + upstream GetBusbar/busbar@v* + manual: when busbar core's latest
+#                    release is newer than the vendored spec (internal/apiclient/openapi.json
+#                    info.version), refresh the spec, `go generate`, commit to main and push the next
+#                    patch tag. Secret TF_PROVIDER_PUSH_TOKEN (scope: repo
+#                    GetBusbar/terraform-provider-busbar, check provider-recut): bypass-capable push
+#                    to main and tags. Never name it under `move`. Without the token a run does
+#                    everything but push (a dry run) and then fails on purpose.
+#                    (A manual run no longer forces a re-cut when nothing is stale; the old
+#                    workflow_dispatch `version` input is gone.)
+#   provider-release tag v* + manual: GoReleaser builds, GPG-signs SHA256SUMS and publishes the GitHub
+#                    release the Terraform Registry consumes. Secrets GPG_PRIVATE_KEY, PASSPHRASE,
+#                    TF_PROVIDER_RELEASE_TOKEN (scope: repo GetBusbar/terraform-provider-busbar,
+#                    check provider-release). Fails fast when GPG_PRIVATE_KEY is empty.
+to: main
+on:
+  move: [provider-files-present]
+  schedule:
+  - cron: "17 6 * * *"
+    checks: [provider-recut]
+  upstream:
+  - from: GetBusbar/busbar@v*
+    checks: [provider-recut]
+  tag:
+  - tags: ["v*"]
+    checks: [provider-release]
+  manual: [provider-recut, provider-release]
+checks:
+  provider-files-present:
+    run: test -f .goreleaser.yml && test -f internal/apiclient/openapi.json
+  provider-recut:
+    requires: [go, git, curl, jq]
+    run: |
+      set -euo pipefail
+      T="${TF_PROVIDER_PUSH_TOKEN:-}"
+      AUTH=(); [ -n "$T" ] && AUTH=(-H "Authorization: Bearer $T")
+      REPO=https://github.com/GetBusbar/terraform-provider-busbar.git
+      cur_ver="$(jq -r '.info.version' internal/apiclient/openapi.json)"
+      rel="$(curl -fsSL "${AUTH[@]}" https://api.github.com/repos/GetBusbar/busbar/releases/latest)"
+      target_tag="$(jq -r '.tag_name // empty' <<<"$rel")"
+      target_ver="${target_tag#v}"
+      echo "vendored busbar spec=${cur_ver:-none} busbar latest=${target_tag:-none}"
+      [ -n "$target_ver" ] || { echo "cannot read busbar's latest release: doing nothing"; exit 0; }
+      if [ "$target_ver" = "$cur_ver" ] || [ "$(printf '%s\n%s\n' "$cur_ver" "$target_ver" | sort -V | tail -1)" != "$target_ver" ]; then
+        echo "no newer busbar: nothing to do"; exit 0
+      fi
+      url="$(jq -r '[.assets[]|select(.name|test("^busbar-openapi-.*\\.json$"))][0].browser_download_url // empty' <<<"$rel")"
+      [ -n "$url" ] || { echo "busbar ${target_tag} has no busbar-openapi-*.json asset"; exit 1; }
+      curl -fsSL -o internal/apiclient/openapi.json "$url"
+      echo "refreshed vendored spec to ${target_tag} (info.version=$(jq -r .info.version internal/apiclient/openapi.json))"
+      go generate ./...
+      go build ./...
+      git fetch -q "$REPO" '+refs/tags/*:refs/tags/*'
+      latest="$(git tag --list 'v*' | sort -V | tail -1)"
+      [ -n "$latest" ] || { echo "no existing v* tag to patch-bump from"; exit 1; }
+      IFS=. read -r major minor patch <<<"${latest#v}"
+      next="v${major}.${minor}.$((patch + 1))"
+      echo "latest tag ${latest} -> next ${next}"
+      if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then echo "${next} already exists: no-op"; exit 0; fi
+      git add internal/apiclient/openapi.json internal/apiclient/client.gen.go docs
+      if git diff --cached --quiet; then echo "spec + generated client already current"; else
+        git -c user.name=busbar-bot -c user.email=bot@getbusbar.com commit -q -m "apiclient: refresh vendored busbar spec to ${target_tag} for the ${next} release"
+        git --no-pager show --stat --oneline HEAD
+      fi
+      if [ -z "$T" ]; then
+        echo "DRY RUN OK: TF_PROVIDER_PUSH_TOKEN is not set, so nothing was pushed (a scheduled run has it)"; exit 1
+      fi
+      B64="$(printf 'x-access-token:%s' "$T" | base64 | tr -d '\n')"
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="Authorization: basic $B64"
+      git push "$REPO" HEAD:refs/heads/main
+      git -c user.name=busbar-bot -c user.email=bot@getbusbar.com tag "$next"
+      git push "$REPO" "refs/tags/${next}"
+  provider-release:
+    requires: [go, git, gpg, curl, tar]
+    run: |
+      set -euo pipefail
+      [ -n "${GPG_PRIVATE_KEY:-}" ] || { echo "GPG_PRIVATE_KEY is empty: provider-release needs its scoped secrets (a tag or manual run of this check)"; exit 1; }
+      [ -n "${TF_PROVIDER_RELEASE_TOKEN:-}" ] || { echo "TF_PROVIDER_RELEASE_TOKEN is empty"; exit 1; }
+      export GNUPGHOME="$(mktemp -d)"; chmod 700 "$GNUPGHOME"
+      trap 'gpgconf --kill gpg-agent >/dev/null 2>&1 || true; rm -rf "$GNUPGHOME"' EXIT
+      echo "allow-preset-passphrase" > "$GNUPGHOME/gpg-agent.conf"
+      printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --quiet --import
+      fpr="$(gpg --batch --with-colons --list-secret-keys | awk -F: '/^fpr/{print $10; exit}')"
+      if [ -n "${PASSPHRASE:-}" ]; then
+        preset="$(gpgconf --list-dirs libexecdir)/gpg-preset-passphrase"
+        for grip in $(gpg --batch --with-colons --list-secret-keys --with-keygrip | awk -F: '/^grp/{print $10}'); do
+          "$preset" --preset -P "$PASSPHRASE" "$grip"
+        done
+      fi
+      export GPG_FINGERPRINT="$fpr" GITHUB_TOKEN="$TF_PROVIDER_RELEASE_TOKEN"
+      git fetch -q https://github.com/GetBusbar/terraform-provider-busbar.git '+refs/tags/*:refs/tags/*'
+      if ! command -v goreleaser >/dev/null; then
+        W="$(mktemp -d)"; arch="$(uname -m)"; case "$arch" in aarch64) arch=arm64;; esac
+        curl -fsSL "https://github.com/goreleaser/goreleaser/releases/download/v2.12.0/goreleaser_Linux_${arch}.tar.gz" | tar -xz -C "$W" goreleaser
+        PATH="$W:$PATH"
+      fi
+      goreleaser release --clean
+env:
+  CI: 'true'
