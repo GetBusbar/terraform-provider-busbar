@@ -192,7 +192,7 @@ checks:
       go vet ./... </dev/null
       # gofmt (must be clean)
       ( bash -e /dev/fd/3 3<<'MODERNCI_STEP' </dev/null
-      unformatted="$(gofmt -l .)"
+      unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
       if [ -n "$unformatted" ]; then
         echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
       fi
