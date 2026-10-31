@@ -40,7 +40,7 @@ checks:
       mkdir -p "$RUNNER_TEMP/busbar"
       cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
       admin_listen: "0.0.0.0:8081"
-      admin_insecure: true
+      admin_require_mtls: false
       models:
         test-model:
           provider: anthropic
@@ -49,11 +49,20 @@ checks:
       providers:
         anthropic:
           api_key: { env: "ANTHROPIC_API_KEY" }
+      identity-providers:
+        admin-tokens:
+          module: admin-tokens
+          token: { env: "BUSBAR_ADMIN_TOKEN" }
       auth:
         chain: [keys]
-        admin_auth:
-          - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+        admin_auth: [admin-tokens]
+        signing_key: { env: "BUSBAR_SIGNING_KEY" }
+      store:
+        module: memory
       YAML
+      # throwaway signing key, minted per run (required since 1.5.1); never committed
+      BUSBAR_SIGNING_KEY="$(./busbar-src/target/release/busbar --generate-signing-key 2>/dev/null)"
+      export BUSBAR_SIGNING_KEY
       ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
         BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
         BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
@@ -91,7 +100,7 @@ checks:
       mkdir -p "$RUNNER_TEMP/busbar"
       cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
       admin_listen: "0.0.0.0:8081"
-      admin_insecure: true
+      admin_require_mtls: false
       models:
         test-model:
           provider: anthropic
@@ -100,11 +109,20 @@ checks:
       providers:
         anthropic:
           api_key: { env: "ANTHROPIC_API_KEY" }
+      identity-providers:
+        admin-tokens:
+          module: admin-tokens
+          token: { env: "BUSBAR_ADMIN_TOKEN" }
       auth:
         chain: [keys]
-        admin_auth:
-          - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+        admin_auth: [admin-tokens]
+        signing_key: { env: "BUSBAR_SIGNING_KEY" }
+      store:
+        module: memory
       YAML
+      # throwaway signing key, minted per run (required since 1.5.1); never committed
+      BUSBAR_SIGNING_KEY="$(./busbar-src/target/release/busbar --generate-signing-key 2>/dev/null)"
+      export BUSBAR_SIGNING_KEY
       ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
         BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
         BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
@@ -149,7 +167,7 @@ checks:
       mkdir -p "$RUNNER_TEMP/busbar"
       cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
       admin_listen: "0.0.0.0:8081"
-      admin_insecure: true
+      admin_require_mtls: false
       models:
         test-model:
           provider: anthropic
@@ -158,11 +176,20 @@ checks:
       providers:
         anthropic:
           api_key: { env: "ANTHROPIC_API_KEY" }
+      identity-providers:
+        admin-tokens:
+          module: admin-tokens
+          token: { env: "BUSBAR_ADMIN_TOKEN" }
       auth:
         chain: [keys]
-        admin_auth:
-          - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+        admin_auth: [admin-tokens]
+        signing_key: { env: "BUSBAR_SIGNING_KEY" }
+      store:
+        module: memory
       YAML
+      # throwaway signing key, minted per run (required since 1.5.1); never committed
+      BUSBAR_SIGNING_KEY="$(./busbar-src/target/release/busbar --generate-signing-key 2>/dev/null)"
+      export BUSBAR_SIGNING_KEY
       ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
         BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
         BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
