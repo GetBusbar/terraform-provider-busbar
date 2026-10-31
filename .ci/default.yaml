@@ -7,16 +7,15 @@ on:
   - build
   - coverage
   push:
-  - acceptance-1-9
   - acceptance-1-10
   - build
   - coverage
   landed:
-  - acceptance-1-9
   - acceptance-1-10
   - build
   - coverage
   manual:
+  - acceptance-1-9
   - acceptance-poll
   upstream:
   - from: GetBusbar/busbar@v*
