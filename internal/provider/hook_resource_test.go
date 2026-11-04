@@ -14,6 +14,9 @@ import (
 func TestAccHookResource(t *testing.T) {
 	module := os.Getenv("BUSBAR_TEST_HOOK_MODULE")
 	if module == "" {
+		if os.Getenv("TF_ACC") != "" {
+			t.Fatal("BUSBAR_TEST_HOOK_MODULE is required when TF_ACC is enabled")
+		}
 		t.Skip("set BUSBAR_TEST_HOOK_MODULE to an installed signed gate plugin for hook acceptance")
 	}
 	resource.Test(t, resource.TestCase{

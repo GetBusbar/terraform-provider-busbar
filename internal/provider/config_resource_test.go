@@ -1,41 +1,51 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-// The config apply document busbar boots from: the {config, providers} envelope.
-// jsonencode keeps it readable in HCL; the model's max_concurrent/max_requests and
-// the provider api_key_env / protocol / base_url are all required by the gateway.
-const testAccConfigDoc = `
-provider "busbar" {}
-
-resource "busbar_config" "test" {
-  document = jsonencode({
-    config = {
-      models = {
-        test-model = { provider = "anthropic", max_concurrent = 1, max_requests = -1 }
-      }
-      providers = {
-        anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
-      }
-      auth = {
-        chain = ["keys"]
-        admin_auth = [{ "admin-tokens" = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }]
-      }
-    }
-    providers = {
-      anthropic = { protocol = "anthropic", base_url = "https://api.anthropic.com" }
-    }
-  })
+// Reuse the exact disposable gateway config so applying the singleton preserves
+// the signed hook, identity provider, and authentication signing key.
+func testAccConfigDocuments(t *testing.T) (string, string) {
+	t.Helper()
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC must be enabled for config acceptance")
+	}
+	data, err := os.ReadFile(os.Getenv("BUSBAR_TEST_CONFIG_FILE"))
+	if err != nil {
+		t.Fatalf("read BUSBAR_TEST_CONFIG_FILE: %v", err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("decode acceptance boot config: %v", err)
+	}
+	document := func() string {
+		// Providers is optional: preserve the gateway's current provider catalog.
+		payload, err := json.Marshal(map[string]interface{}{"config": config})
+		if err != nil {
+			t.Fatalf("encode acceptance config: %v", err)
+		}
+		return fmt.Sprintf("provider \"busbar\" {}\nresource \"busbar_config\" \"test\" {\n document = %s\n}\n", strconv.Quote(string(payload)))
+	}
+	initial := document()
+	models, ok := config["models"].(map[string]interface{})
+	if !ok {
+		t.Fatal("acceptance config is missing models")
+	}
+	model, ok := models["test-model"].(map[string]interface{})
+	if !ok {
+		t.Fatal("acceptance config is missing test-model")
+	}
+	model["max_concurrent"] = 2
+	return initial, document()
 }
-`
 
 // TestAccConfigResource exercises the GitOps singleton against a live gateway:
 // apply (Create), read-back (config_version surfaced), re-apply (Update bumps the
@@ -43,6 +53,7 @@ resource "busbar_config" "test" {
 // TF_ACC + a reachable gateway. NOTE: this bumps config_version, so run it
 // against a disposable gateway (the acceptance recipe container).
 func TestAccConfigResource(t *testing.T) {
+	initial, updated := testAccConfigDocuments(t)
 	var appliedVersion int64
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -51,7 +62,7 @@ func TestAccConfigResource(t *testing.T) {
 			// Create == apply. An apply bumps the monotonic config_version to a
 			// positive integer (exact value depends on prior applies on the gateway).
 			{
-				Config: testAccConfigDoc,
+				Config: initial,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("busbar_config.test", "id", "config"),
 					resource.TestCheckResourceAttrWith("busbar_config.test", "config_version", func(value string) error {
@@ -64,7 +75,7 @@ func TestAccConfigResource(t *testing.T) {
 				),
 			},
 			{
-				Config: strings.Replace(testAccConfigDoc, "max_concurrent = 1", "max_concurrent = 2", 1),
+				Config: updated,
 				Check: resource.TestCheckResourceAttrWith("busbar_config.test", "config_version", func(value string) error {
 					version, err := strconv.ParseInt(value, 10, 64)
 					if err != nil {

@@ -34,6 +34,7 @@ jobs:
           git diff --exit-code -- docs/ || {
             echo "docs/ is stale — run 'make docs' and commit the result"; exit 1;
           }
+      - run: python3 -B -m unittest discover -s scripts/acceptance -p 'test_*.py' -v
       - run: go test ./... -v
 
   # Coverage (non-required, informational). Runs UNIT tests only — TF_ACC is left
@@ -58,27 +59,8 @@ jobs:
           slug: GetBusbar/terraform-provider-busbar
           fail_ci_if_error: false
 
-  # Acceptance tests: the real Create->Read->Update->Delete->Import lifecycle
-  # against a live busbar gateway.
-  #
-  # TODO(busbar 1.5.0 image): no getbusbar/busbar Docker image with 1.5.0 config/API support is
-  # published yet (Docker Hub tops out at 1.4.1 as of this writing; 1.5.0 hasn't tagged). Until a
-  # 1.5.0 tag exists, this job builds the gateway from GetBusbar/busbar@main source instead of
-  # `docker run getbusbar/busbar:<tag>`. Once getbusbar/busbar:1.5.0 is published, switch the
-  # "build busbar" + "boot busbar gateway" steps below back to a pinned `docker run
-  # getbusbar/busbar:1.5.0` (faster, and tests the actual release artifact rather than a
-  # from-source build of a moving `main`).
-  #
-  # TODO(provider code, tracked separately from this workflow): even with the corrected 1.5.0
-  # config below, TestAccVirtualKeyResource is expected to fail against a real 1.5.0 gateway.
-  # internal/provider/virtual_key_resource.go still sends the 1.4.x per-key cap fields
-  # (max_budget_cents, rpm_limit, tpm_limit, budget_period) on POST/PATCH /keys; 1.5.0's
-  # CreateKeyReq is #[serde(deny_unknown_fields)] (see busbar's openapi.json), so that request
-  # now 400s. Those caps live on `groups:` in 1.5.0, not on the key. Similarly
-  # internal/provider/hook_resource.go still models the retired socket/webhook hook transports;
-  # 1.5.0's POST /hooks takes a `module` naming a signed `kind: hook` plugin instead. Both
-  # resources need a real code migration to the 1.5.0 admin API contract — that's a larger,
-  # separate change from this config/CI fix and is not attempted here.
+  # The development compatibility baseline is an explicit core commit, separate
+  # from the last release actually verified by acceptance-poll (initially none).
   acceptance:
     name: acceptance (TF_ACC)
     runs-on: ubuntu-latest
@@ -96,52 +78,40 @@ jobs:
         with:
           terraform_version: ${{ matrix.terraform }}
           terraform_wrapper: false
-      - name: checkout busbar source (no 1.5.0 image published yet)
+      - name: read development compatibility baseline
+        id: baseline
+        run: |
+          ref="$(cat .github/ACCEPTANCE_BUSBAR_REF)"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - name: checkout pinned busbar source
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
+          ref: ${{ steps.baseline.outputs.ref }}
           path: busbar-src
       - uses: dtolnay/rust-toolchain@stable
-      - name: build busbar
-        working-directory: busbar-src
-        run: cargo build --release -p busbar
-      - name: boot busbar gateway
-        run: |
-          mkdir -p "$RUNNER_TEMP/busbar"
-          cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
-          admin_listen: "0.0.0.0:8081"
-          admin_insecure: true
-          models:
-            test-model:
-              provider: anthropic
-              max_concurrent: 1
-              max_requests: -1
-          providers:
-            anthropic:
-              api_key: { env: "ANTHROPIC_API_KEY" }
-          auth:
-            chain: [keys]
-            admin_auth:
-              - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
-          YAML
-          ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
-            BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
-            BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
-            ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/busbar/pid"
-      - name: wait for gateway
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8081/api/v1/admin/info \
-              -H "x-admin-token: tfacc-admin-token" >/dev/null; then
-              echo "gateway up"; exit 0
-            fi
-            sleep 2
-          done
-          echo "gateway did not become ready"; cat "$RUNNER_TEMP/busbar/busbar.log"; exit 1
+      - name: build gateway and signed gate fixture
+        run: bash scripts/acceptance/gateway.sh build busbar-src "$RUNNER_TEMP/busbar"
+      - name: boot gateway and verify installed gate
+        run: bash scripts/acceptance/gateway.sh boot busbar-src "$RUNNER_TEMP/busbar"
       - name: acceptance tests
         env:
           TF_ACC: "1"
           BUSBAR_ENDPOINT: http://localhost:8081
           BUSBAR_ADMIN_TOKEN: tfacc-admin-token
-        run: go test ./internal/provider/ -run TestAcc -v -timeout 30m
+        run: bash scripts/acceptance/test.sh
+      - name: stop acceptance gateway
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/busbar/pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/busbar/pid")" 2>/dev/null || true
+          fi
+      - name: upload acceptance diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acceptance-${{ matrix.terraform }}
+          path: |
+            ${{ runner.temp }}/busbar/busbar.log
+            ${{ runner.temp }}/acceptance.log

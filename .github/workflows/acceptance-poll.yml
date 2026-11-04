@@ -18,12 +18,7 @@ name: acceptance-poll
 # broken/incompatible provider release that Terraform users pull down can
 # corrupt live Terraform state, which is a much worse failure mode than a
 # stale Homebrew formula or Helm chart (those just fail to update until the
-# next successful poll). There is already a known, real instance of this
-# exact risk on this repo: internal/provider/virtual_key_resource.go and
-# hook_resource.go still send 1.4.x-only admin API fields that a 1.5.0
-# gateway's stricter (deny_unknown_fields) schema rejects -- see the TODO in
-# .github/workflows/test.yml. Fixing that Go code is a separate, larger
-# change and is explicitly out of scope for this workflow.
+# next successful poll).
 #
 # So instead of "bump and tag", this workflow does the conservative thing:
 # check whether busbar has a release newer than the one the acceptance suite
@@ -108,47 +103,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: build busbar
+      # Build the fixture against this candidate's SDK, never the baseline SDK.
+      # An incompatible SDK/build/boot is a visible failure, not skipped coverage.
+      - name: build gateway and signed gate fixture
         id: build
-        working-directory: busbar-src
-        run: cargo build --release -p busbar
+        run: bash scripts/acceptance/gateway.sh build busbar-src "$RUNNER_TEMP/busbar"
 
-      - name: boot busbar gateway
+      - name: boot gateway and verify installed gate
         id: boot
         if: steps.build.outcome == 'success'
-        run: |
-          mkdir -p "$RUNNER_TEMP/busbar"
-          cat > "$RUNNER_TEMP/busbar/config.yaml" <<'YAML'
-          admin_listen: "0.0.0.0:8081"
-          admin_insecure: true
-          models:
-            test-model:
-              provider: anthropic
-              max_concurrent: 1
-              max_requests: -1
-          providers:
-            anthropic:
-              api_key: { env: "ANTHROPIC_API_KEY" }
-          auth:
-            chain: [keys]
-            admin_auth:
-              - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
-          YAML
-          ANTHROPIC_API_KEY="dummy" BUSBAR_ADMIN_TOKEN="tfacc-admin-token" \
-            BUSBAR_CONFIG="$RUNNER_TEMP/busbar/config.yaml" \
-            BUSBAR_PROVIDERS="$GITHUB_WORKSPACE/busbar-src/providers.yaml" \
-            ./busbar-src/target/release/busbar > "$RUNNER_TEMP/busbar/busbar.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/busbar/pid"
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8081/api/v1/admin/info \
-              -H "x-admin-token: tfacc-admin-token" >/dev/null; then
-              echo "gateway up"; exit 0
-            fi
-            sleep 2
-          done
-          echo "gateway did not become ready against candidate release"
-          cat "$RUNNER_TEMP/busbar/busbar.log"
-          exit 1
+        run: bash scripts/acceptance/gateway.sh boot busbar-src "$RUNNER_TEMP/busbar"
 
       - name: acceptance tests
         id: test
@@ -157,7 +121,7 @@ jobs:
           TF_ACC: "1"
           BUSBAR_ENDPOINT: http://localhost:8081
           BUSBAR_ADMIN_TOKEN: tfacc-admin-token
-        run: go test ./internal/provider/ -run TestAcc -v -timeout 30m 2>&1 | tee "$RUNNER_TEMP/acceptance.log"
+        run: bash scripts/acceptance/test.sh
 
       - name: gate on overall result
         id: gate
@@ -177,10 +141,17 @@ jobs:
         with:
           name: acceptance-failure-${{ needs.check.outputs.candidate }}
           path: |
-            /tmp/**/busbar.log
-            /tmp/**/acceptance.log
+            ${{ runner.temp }}/busbar/busbar.log
+            ${{ runner.temp }}/acceptance.log
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: stop acceptance gateway
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/busbar/pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/busbar/pid")" 2>/dev/null || true
+          fi
 
   open-pr-on-pass:
     needs: [check, acceptance]
@@ -235,7 +206,7 @@ jobs:
           {
             echo "The daily acceptance-poll workflow tried to build busbar \`${CANDIDATE}\` from source, boot it, and run this provider's TestAcc suite against it. It did not pass (build, boot, or the acceptance tests themselves failed)."
             echo
-            echo "This is exactly the kind of incompatibility this workflow exists to catch before a broken provider release ships: see the known gap already tracked in .github/workflows/test.yml (internal/provider/virtual_key_resource.go and hook_resource.go sending 1.4.x-only admin API fields that a stricter 1.5.0-style schema rejects) — this failure may be that same gap, or something new in \`${CANDIDATE}\`."
+            echo "The candidate must build the signed gate fixture against its own SDK, expose it through the live gateway, and pass every acceptance test without skips. See the build, boot, and test logs for the failing stage."
             echo
             echo ".github/ACCEPTANCE_BUSBAR_VERSION was left unchanged, so this will keep re-flagging on every daily run until it's resolved or superseded by a newer busbar release."
             echo
