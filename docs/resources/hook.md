@@ -3,36 +3,26 @@
 page_title: "busbar_hook Resource - busbar"
 subcategory: ""
 description: |-
-  A routing hook: an external tap or gate reached over a unix socket or webhook, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). Exactly one of socket or webhook must be set. The grant fields (kind, prompt, user) are immutable once registered — changing them replaces the hook.
+  A routing hook backed by an installed signed plugin (POST/GET/PUT/DELETE /api/v1/admin/hooks). The grant fields kind, prompt, and user are immutable; changing them replaces the hook. Settings are sensitive and write-only on current gateways; import cannot recover them.
 ---
 
 # busbar_hook (Resource)
 
-A routing hook: an external tap or gate reached over a unix socket or webhook, wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). Exactly one of socket or webhook must be set. The grant fields (kind, prompt, user) are immutable once registered — changing them replaces the hook.
+A routing hook backed by an installed signed plugin (POST/GET/PUT/DELETE /api/v1/admin/hooks). The grant fields kind, prompt, and user are immutable; changing them replaces the hook. Settings are sensitive and write-only on current gateways; import cannot recover them.
 
 ## Example Usage
 
 ```terraform
-# Register a blocking "gate" hook reached over a webhook: it may inspect
-# (prompt = "ro") and rerank candidates before the request is dispatched.
+# The module must already be installed as a signed hook plugin on the gateway.
 resource "busbar_hook" "ranker" {
   name       = "quality-ranker"
   kind       = "gate"
-  webhook    = "https://ranker.internal.example/rank"
+  module     = "my-installed-ranker"
   prompt     = "ro"
   timeout_ms = 100
   priority   = 10
-  on_error   = "weighted" # fall back to the weighted floor if the hook errors
+  on_error   = "weighted"
   settings   = jsonencode({ min_score = 0.6 })
-}
-
-# A fire-and-forget "tap" hook over a unix socket for async usage telemetry.
-resource "busbar_hook" "usage_tap" {
-  name    = "usage-telemetry"
-  kind    = "tap"
-  socket  = "/run/busbar/usage.sock"
-  at      = "completion"
-  global  = true
 }
 ```
 
@@ -42,22 +32,23 @@ resource "busbar_hook" "usage_tap" {
 ### Required
 
 - `kind` (String) Transport contract: tap (fire-and-forget, non-blocking) or gate (blocking, may rewrite/reject). Immutable grant; changing it replaces the hook.
+- `module` (String) Signed hook plugin name or alias installed on the gateway.
 - `name` (String) Unique hook name (<= 256 chars; not a reserved terminal name). Immutable; changing it replaces the hook.
 
 ### Optional
 
-- `at` (String) Pipeline stage: request, route, attempt, or completion. Null lets busbar place it by kind.
+- `at` (String) Legacy pipeline stage: request, candidate, routing, or response. Null lets busbar place it by kind.
 - `default` (Boolean) Whether this hook is the default for its stage. Write-only (not echoed by reads).
-- `global` (Boolean) Whether the hook applies globally (all pools). Defaults to false. May read back true if wired via global_hooks.
+- `global` (Boolean) Whether the hook applies globally (all pools). Defaults to false. May read back true if attached globally.
 - `on_empty` (String) Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Write-only (not echoed by reads).
 - `on_error` (String) Behavior when the hook errors/times out: a terminal (weighted, reject, first, nothing) or another hook name. Defaults to nothing.
 - `priority` (Number) Ordering priority within a stage. Defaults to 0.
 - `prompt` (String) Prompt-content access grant: no, ro, or rw. Defaults to no. Immutable grant; changing it replaces the hook. (rw is invalid on a tap.)
-- `settings` (String) Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.
-- `socket` (String) Unix socket path to the hook process. Exactly one of socket or webhook.
+- `settings` (String, Sensitive) Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.
+- `socket` (String, Deprecated) Unsupported since busbar 1.5; use module and plugin settings.
 - `timeout_ms` (Number) Per-call timeout in milliseconds. Defaults to 1.
 - `user` (String) Caller-identity access grant: no or ro. Defaults to no. Immutable grant; changing it replaces the hook.
-- `webhook` (String) Webhook URL for the hook. Exactly one of socket or webhook.
+- `webhook` (String, Deprecated) Unsupported since busbar 1.5; use module and plugin settings.
 
 ## Import
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -25,7 +26,7 @@ var (
 
 // virtualKeyResource manages a governance virtual key: POST /api/v1/admin/keys
 // mints one (returning the plaintext secret exactly once), GET /keys/{id}
-// refreshes its metadata, PATCH /keys/{id} adjusts the mutable caps, and
+// refreshes its metadata, and
 // DELETE /keys/{id} revokes it.
 type virtualKeyResource struct {
 	client *adminClient
@@ -58,27 +59,16 @@ type virtualKeyModel struct {
 
 // createKeyReq is the POST /keys body (busbar CreateKeyReq).
 type createKeyReq struct {
-	Name               string   `json:"name"`
-	AllowedPools       []string `json:"allowed_pools,omitempty"`
-	MaxBudgetCents     *int64   `json:"max_budget_cents,omitempty"`
-	BudgetPeriod       *string  `json:"budget_period,omitempty"`
-	RPMLimit           *int64   `json:"rpm_limit,omitempty"`
-	TPMLimit           *int64   `json:"tpm_limit,omitempty"`
-	IssueAWSCredential bool     `json:"issue_aws_credential,omitempty"`
+	Name               string    `json:"name"`
+	AllowedPools       *[]string `json:"allowed_pools,omitempty"`
+	IssueAWSCredential bool      `json:"issue_aws_credential,omitempty"`
 }
-
-// updateKeyReq is the PATCH /keys/{id} body. The three cap fields use pointers so
-// an omitted field leaves the stored value unchanged (the server treats absent as
-// "leave alone" and JSON null as "clear"). We always send the current planned
-// value, so a cleared (null) plan attribute maps to an explicit null via
-// json.Marshal of a nil pointer only when the field is intentionally omitted;
-// see buildUpdate for the null-clear handling.
-type updateKeyReq map[string]any
 
 // keyView is the GET/POST metadata response (busbar key_meta), plus the
 // create-only secret fields.
 type keyView struct {
 	ID                 string   `json:"id"`
+	State              string   `json:"state"`
 	Name               string   `json:"name"`
 	AllowedPools       []string `json:"allowed_pools"`
 	MaxBudgetCents     *int64   `json:"max_budget_cents"`
@@ -87,7 +77,7 @@ type keyView struct {
 	TPMLimit           *int64   `json:"tpm_limit"`
 	Enabled            bool     `json:"enabled"`
 	CreatedAt          int64    `json:"created_at"`
-	Secret             *string  `json:"secret"`                // create only
+	Secret             *string  `json:"token"`                 // create only
 	AWSAccessKeyID     *string  `json:"aws_access_key_id"`     // create only, issue_aws_credential
 	AWSSecretAccessKey *string  `json:"aws_secret_access_key"` // create only, issue_aws_credential
 }
@@ -98,11 +88,7 @@ func (r *virtualKeyResource) Metadata(_ context.Context, req resource.MetadataRe
 
 func (r *virtualKeyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A governance virtual key: a mintable, revocable credential with budget and " +
-			"rate caps scoped to a set of pools (POST/GET/PATCH/DELETE /api/v1/admin/keys). The " +
-			"plaintext secret is returned by busbar only once, at creation, and is stored in state " +
-			"as a sensitive value; refreshes update metadata (budget/limits/enabled) but never the " +
-			"secret. Requires `governance:` to be enabled on the gateway.",
+		Description: "A signed, expiring busbar virtual key scoped to pools. The bearer token is returned once at creation and stored as a sensitive value. Budget and rate limits belong to gateway groups in busbar 1.5 and later; legacy key limit attributes are rejected.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -121,33 +107,36 @@ func (r *virtualKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"allowed_pools": schema.ListAttribute{
 				Optional:    true,
 				ElementType: types.StringType,
-				Description: "Pools this key may target. Empty/unset means unrestricted. Immutable; " +
+				Description: "Pools this key may target. Unset means all pools; an empty list means no pools. Immutable; " +
 					"changing it replaces the key (the mint spec is fixed at creation).",
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.RequiresReplace(),
 				},
 			},
 			"max_budget_cents": schema.Int64Attribute{
-				Optional: true,
-				Description: "Spend cap in cents over the budget window (>= 0). Omit for unlimited. " +
-					"Mutable via PATCH.",
+				DeprecationMessage: "Removed by busbar 1.5; configure limits on gateway groups.",
+				Optional:           true,
+				Description:        "Unsupported since busbar 1.5; configure spend limits on gateway groups.",
 			},
 			"budget_period": schema.StringAttribute{
-				Optional:    true,
-				Computed:    true,
-				Description: "Budget window: one of total, daily, monthly. Defaults to total. Immutable; changing it replaces the key.",
+				DeprecationMessage: "Removed by busbar 1.5; configure limits on gateway groups.",
+				Optional:           true,
+				Computed:           true,
+				Description:        "Unsupported since busbar 1.5; configure budget windows on gateway groups.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"rpm_limit": schema.Int64Attribute{
-				Optional:    true,
-				Description: "Requests-per-minute cap (>= 1). Omit for unlimited. Mutable via PATCH.",
+				DeprecationMessage: "Removed by busbar 1.5; configure limits on gateway groups.",
+				Optional:           true,
+				Description:        "Unsupported since busbar 1.5; configure rate limits on gateway groups.",
 			},
 			"tpm_limit": schema.Int64Attribute{
-				Optional:    true,
-				Description: "Tokens-per-minute cap (>= 1). Omit for unlimited. Mutable via PATCH.",
+				DeprecationMessage: "Removed by busbar 1.5; configure limits on gateway groups.",
+				Optional:           true,
+				Description:        "Unsupported since busbar 1.5; configure rate limits on gateway groups.",
 			},
 			"issue_aws_credential": schema.BoolAttribute{
 				Optional: true,
@@ -171,7 +160,7 @@ func (r *virtualKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"secret": schema.StringAttribute{
 				Computed:    true,
 				Sensitive:   true,
-				Description: "The plaintext bearer secret (sk-bb-...). Returned only at creation; stored in state and never re-read.",
+				Description: "The signed bearer token. Returned only at creation; stored in state and never re-read.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -217,27 +206,23 @@ func (r *virtualKeyResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
+	if !validateKeyLimits(&plan, resp.Diagnostics.AddError) {
+		return
+	}
 	body := createKeyReq{
 		Name:               plan.Name.ValueString(),
 		IssueAWSCredential: plan.IssueAWSCredential.ValueBool(),
 	}
 	if !plan.AllowedPools.IsNull() && !plan.AllowedPools.IsUnknown() {
-		resp.Diagnostics.Append(plan.AllowedPools.ElementsAs(ctx, &body.AllowedPools, false)...)
+		var pools []string
+		resp.Diagnostics.Append(plan.AllowedPools.ElementsAs(ctx, &pools, false)...)
+		if pools == nil {
+			pools = []string{}
+		}
+		body.AllowedPools = &pools
 		if resp.Diagnostics.HasError() {
 			return
 		}
-	}
-	if !plan.MaxBudgetCents.IsNull() {
-		body.MaxBudgetCents = plan.MaxBudgetCents.ValueInt64Pointer()
-	}
-	if !plan.BudgetPeriod.IsNull() && !plan.BudgetPeriod.IsUnknown() {
-		body.BudgetPeriod = plan.BudgetPeriod.ValueStringPointer()
-	}
-	if !plan.RPMLimit.IsNull() {
-		body.RPMLimit = plan.RPMLimit.ValueInt64Pointer()
-	}
-	if !plan.TPMLimit.IsNull() {
-		body.TPMLimit = plan.TPMLimit.ValueInt64Pointer()
 	}
 
 	httpResp, err := r.client.do(ctx, http.MethodPost, "/keys", body, nil)
@@ -259,12 +244,19 @@ func (r *virtualKeyResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
+	if view.ID == "" {
+		resp.Diagnostics.AddError("Invalid virtual key create response", "The gateway omitted the key ID.")
+		return
+	}
 	// Fold the metadata into state, then stamp the once-shown secrets.
 	applyKeyView(ctx, &plan, &view, resp.Diagnostics.AddError)
 	plan.Secret = optString(view.Secret)
 	plan.AWSAccessKeyID = optString(view.AWSAccessKeyID)
 	plan.AWSSecretAccessKey = optString(view.AWSSecretAccessKey)
-
+	if err := validateMintedCredentials(&view, plan.IssueAWSCredential.ValueBool()); err != nil {
+		resp.Diagnostics.AddError("Incomplete virtual key create response", err.Error())
+	}
+	// Keep the returned ID even on an incomplete credential response so Terraform can clean up the minted key.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -275,7 +267,7 @@ func (r *virtualKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	httpResp, err := r.client.do(ctx, http.MethodGet, "/keys/"+state.ID.ValueString(), nil, nil)
+	httpResp, err := r.client.do(ctx, http.MethodGet, "/keys/"+url.PathEscape(state.ID.ValueString()), nil, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read virtual key", err.Error())
 		return
@@ -299,6 +291,11 @@ func (r *virtualKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
+	if view.State == "tombstoned" {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	// Refresh metadata only; secrets are create-only and preserved as-is.
 	applyKeyView(ctx, &state, &view, resp.Diagnostics.AddError)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -312,31 +309,12 @@ func (r *virtualKeyResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	// Only the mutable caps flow through PATCH. RequiresReplace on the immutable
-	// attributes means Update only ever sees cap changes. A null plan attribute
-	// where state had a value clears the cap (JSON null); a value sets it.
-	body := updateKeyReq{}
-	addCap(body, "max_budget_cents", plan.MaxBudgetCents, state.MaxBudgetCents)
-	addCap(body, "rpm_limit", plan.RPMLimit, state.RPMLimit)
-	addCap(body, "tpm_limit", plan.TPMLimit, state.TPMLimit)
-
-	if len(body) > 0 {
-		httpResp, err := r.client.do(ctx, http.MethodPatch, "/keys/"+state.ID.ValueString(), body, nil)
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to update virtual key", err.Error())
-			return
-		}
-		if httpResp.StatusCode != http.StatusOK {
-			resp.Diagnostics.AddError(
-				"busbar rejected the virtual key update",
-				fmt.Sprintf("PATCH /api/v1/admin/keys/%s returned %d: %s", state.ID.ValueString(), httpResp.StatusCode, httpResp.errorMessage()),
-			)
-			return
-		}
+	if !validateKeyLimits(&plan, resp.Diagnostics.AddError) {
+		return
 	}
 
 	// Re-read to fold the authoritative post-update metadata into state.
-	httpResp, err := r.client.do(ctx, http.MethodGet, "/keys/"+state.ID.ValueString(), nil, nil)
+	httpResp, err := r.client.do(ctx, http.MethodGet, "/keys/"+url.PathEscape(state.ID.ValueString()), nil, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to re-read virtual key after update", err.Error())
 		return
@@ -369,7 +347,7 @@ func (r *virtualKeyResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
-	httpResp, err := r.client.do(ctx, http.MethodDelete, "/keys/"+state.ID.ValueString(), nil, nil)
+	httpResp, err := r.client.do(ctx, http.MethodDelete, "/keys/"+url.PathEscape(state.ID.ValueString()), nil, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to delete virtual key", err.Error())
 		return
@@ -400,34 +378,18 @@ func applyKeyView(ctx context.Context, m *virtualKeyModel, v *keyView, addError 
 		}
 		return
 	}
-	// The server always returns an array; model an empty one as null so a config
-	// that omits allowed_pools stays consistent with what comes back.
-	if len(v.AllowedPools) == 0 {
+	// Null grants all pools; an explicit empty array grants none.
+	if v.AllowedPools == nil {
 		m.AllowedPools = types.ListNull(types.StringType)
 	} else {
 		m.AllowedPools = pools
 	}
 	m.MaxBudgetCents = optInt64(v.MaxBudgetCents)
-	m.BudgetPeriod = types.StringValue(v.BudgetPeriod)
+	m.BudgetPeriod = types.StringNull()
 	m.RPMLimit = optInt64(v.RPMLimit)
 	m.TPMLimit = optInt64(v.TPMLimit)
 	m.Enabled = types.BoolValue(v.Enabled)
 	m.CreatedAt = types.Int64Value(v.CreatedAt)
-}
-
-// addCap writes the PATCH entry for a three-state cap: unchanged -> omit;
-// plan null (state had value) -> explicit JSON null (clear); plan value -> set.
-func addCap(body updateKeyReq, field string, plan, state types.Int64) {
-	switch {
-	case plan.IsNull() && state.IsNull():
-		// unchanged (both unlimited)
-	case plan.IsNull():
-		body[field] = nil // clear back to unlimited
-	case !state.IsNull() && plan.ValueInt64() == state.ValueInt64():
-		// unchanged value
-	default:
-		body[field] = plan.ValueInt64()
-	}
 }
 
 func optString(v *string) types.String {
@@ -435,4 +397,41 @@ func optString(v *string) types.String {
 		return types.StringNull()
 	}
 	return types.StringValue(*v)
+}
+
+// ValidateConfig rejects removed pre-1.5 key limits before any remote mutation.
+func (r *virtualKeyResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var cfg virtualKeyModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	for name, present := range map[string]bool{
+		"max_budget_cents": !cfg.MaxBudgetCents.IsNull() && !cfg.MaxBudgetCents.IsUnknown(),
+		"rpm_limit":        !cfg.RPMLimit.IsNull() && !cfg.RPMLimit.IsUnknown(),
+		"tpm_limit":        !cfg.TPMLimit.IsNull() && !cfg.TPMLimit.IsUnknown(),
+		"budget_period":    !cfg.BudgetPeriod.IsNull() && !cfg.BudgetPeriod.IsUnknown(),
+	} {
+		if present {
+			resp.Diagnostics.AddAttributeError(path.Root(name), "Unsupported key limit", "busbar 1.5 and later enforce budgets and rates on groups, not keys. Remove this legacy attribute and configure limits on the gateway group.")
+		}
+	}
+}
+
+func validateKeyLimits(m *virtualKeyModel, addError func(string, string)) bool {
+	if !m.MaxBudgetCents.IsNull() || !m.RPMLimit.IsNull() || !m.TPMLimit.IsNull() || (!m.BudgetPeriod.IsNull() && !m.BudgetPeriod.IsUnknown()) {
+		addError("Unsupported key limits", "busbar 1.5 and later enforce budgets and rates on groups. Remove legacy key limit attributes.")
+		return false
+	}
+	return true
+}
+
+func validateMintedCredentials(v *keyView, issueAWS bool) error {
+	if v.Secret == nil || *v.Secret == "" {
+		return fmt.Errorf("the gateway omitted the once-only bearer token; the key cannot be used")
+	}
+	if issueAWS && (v.AWSAccessKeyID == nil || *v.AWSAccessKeyID == "" || v.AWSSecretAccessKey == nil || *v.AWSSecretAccessKey == "") {
+		return fmt.Errorf("the gateway omitted requested once-only AWS credentials")
+	}
+	return nil
 }

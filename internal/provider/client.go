@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -59,8 +61,7 @@ type adminResponse struct {
 // adminError is the frozen v1 admin error envelope {"error":{"code,message}}.
 type adminError struct {
 	Error struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code string `json:"code"`
 	} `json:"error"`
 }
 
@@ -91,11 +92,11 @@ func (c *adminClient) do(ctx context.Context, method, path string, body any, hea
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, adminRequestError(err)
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readAdminBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
@@ -110,17 +111,45 @@ func (c *adminClient) do(ctx context.Context, method, path string, body any, hea
 // decode unmarshals the response body into v.
 func (r *adminResponse) decode(v any) error {
 	if err := json.Unmarshal(r.Body, v); err != nil {
-		return fmt.Errorf("decoding response (%d): %w", r.StatusCode, err)
+		return fmt.Errorf("decoding response (%d): invalid JSON response", r.StatusCode)
 	}
 	return nil
 }
 
-// errorMessage extracts the admin error envelope's message, falling back to the
-// raw body when it is not the standard shape.
+// errorMessage exposes only recognized error codes, never untrusted response text.
 func (r *adminResponse) errorMessage() string {
+	// Error bodies can echo config documents and credentials. Only expose stable codes.
 	var e adminError
-	if err := json.Unmarshal(r.Body, &e); err == nil && e.Error.Message != "" {
-		return fmt.Sprintf("%s (%s)", e.Error.Message, e.Error.Code)
+	if json.Unmarshal(r.Body, &e) == nil {
+		switch e.Error.Code {
+		case "not_found", "unauthorized", "forbidden", "invalid_request", "version_conflict", "conflict", "rate_limited", "internal", "unavailable", "method_not_allowed":
+			return e.Error.Code
+		}
 	}
-	return string(r.Body)
+	return "admin request failed (response body omitted)"
+}
+
+const maxAdminBody = 16 << 20
+
+func readAdminBody(body io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxAdminBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read admin response body")
+	}
+	if len(raw) > maxAdminBody {
+		return nil, fmt.Errorf("admin response exceeds 16 MiB")
+	}
+	return raw, nil
+}
+
+// Transport errors can contain a peer-controlled malformed status line or trailer.
+func adminRequestError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("admin request canceled")
+	}
+	var networkError net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()) {
+		return fmt.Errorf("admin request timed out")
+	}
+	return fmt.Errorf("admin request failed; check the endpoint, TLS configuration, and network connectivity")
 }

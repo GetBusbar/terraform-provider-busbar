@@ -3,12 +3,12 @@
 page_title: "busbar_config Resource - busbar"
 subcategory: ""
 description: |-
-  A GitOps singleton that owns the running busbar config and applies it wholesale (POST /api/v1/admin/config/apply). Manage at most ONE of these per gateway. The document is the full JSON config payload busbar boots from ({"config": {...}, "providers": {...}}); applying it bumps config_version. Applies are LIVE-ONLY by default — they revert to disk truth on the next reload or restart unless the gateway persists an overlay. Destroying this resource is a no-op on the gateway (there is no unapply); it only drops Terraform's tracking.
+  A GitOps singleton that owns the running busbar config and applies it wholesale (POST /api/v1/admin/config/apply). Manage at most ONE of these per gateway. The document is the full JSON config payload busbar boots from ({"config": {...}, "providers": {...}}); applying it bumps config_version. Full documents are live-only and revert to disk plus overlay on reload or restart; persist changes in config.yaml. The gateway must allow mutations with a writable overlay. Destroying this resource is a no-op on the gateway (there is no unapply); it only drops Terraform's tracking.
 ---
 
 # busbar_config (Resource)
 
-A GitOps singleton that owns the running busbar config and applies it wholesale (POST /api/v1/admin/config/apply). Manage at most ONE of these per gateway. The document is the full JSON config payload busbar boots from ({"config": {...}, "providers": {...}}); applying it bumps config_version. Applies are LIVE-ONLY by default — they revert to disk truth on the next reload or restart unless the gateway persists an overlay. Destroying this resource is a no-op on the gateway (there is no unapply); it only drops Terraform's tracking.
+A GitOps singleton that owns the running busbar config and applies it wholesale (POST /api/v1/admin/config/apply). Manage at most ONE of these per gateway. The document is the full JSON config payload busbar boots from ({"config": {...}, "providers": {...}}); applying it bumps config_version. Full documents are live-only and revert to disk plus overlay on reload or restart; persist changes in config.yaml. The gateway must allow mutations with a writable overlay. Destroying this resource is a no-op on the gateway (there is no unapply); it only drops Terraform's tracking.
 
 ## Example Usage
 
@@ -17,23 +17,21 @@ A GitOps singleton that owns the running busbar config and applies it wholesale 
 # busbar_config per gateway. The document is the JSON payload busbar boots from,
 # an envelope of { config = {DeployCfg}, providers = {name = ProviderDef} }.
 #
-# Applies are live-only by default: they revert to disk truth on the next reload
-# or restart unless the gateway persists an overlay. Destroying this resource is a
+# Full config applies are live-only: they revert to disk plus overlay on reload
+# or restart. Persist the source document in config.yaml. Destroying this resource is a
 # no-op on the gateway (there is no "unapply"); it only drops Terraform's tracking.
 resource "busbar_config" "running" {
   document = jsonencode({
     config = {
-      auth = null
       models = {
         "claude-sonnet" = { provider = "anthropic", max_concurrent = 8, max_requests = -1 }
       }
       providers = {
-        anthropic = { api_key_env = "ANTHROPIC_API_KEY" }
+        anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
       }
-      governance = {
-        enabled     = true
-        db_path     = "/var/lib/busbar/governance.db"
-        admin_token = var.busbar_admin_token
+      auth = {
+        chain = ["keys"]
+        admin_auth = [{ "admin-tokens" = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }]
       }
     }
     providers = {
@@ -52,7 +50,7 @@ output "config_version" {
 
 ### Required
 
-- `document` (String) The full config apply document as a JSON string: {"config": {DeployCfg}, "providers": {name: ProviderDef}}. The `config` key is required; `providers` is optional. This is the write model (the boot-file shape), NOT the redacted read projection returned by GET /config.
+- `document` (String, Sensitive) The full config apply document as a JSON string: {"config": {DeployCfg}, "providers": {name: ProviderDef}}. The `config` key is required; `providers` is optional. This is the write model (the boot-file shape), NOT the redacted read projection returned by GET /config.
 
 ### Read-Only
 

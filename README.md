@@ -12,8 +12,8 @@ its admin API.
   optional mTLS / custom CA / insecure-skip-verify for the admin plane.
 - One read-only data source, `busbar_info` → `GET /api/v1/admin/info`.
 - Three resources:
-  - **`busbar_virtual_key`** — mint/read/update/revoke a governance virtual key
-    (`POST/GET/PATCH/DELETE /api/v1/admin/keys`). The plaintext secret is returned
+  - **`busbar_virtual_key`** — mint/read/revoke a signed virtual key
+    (`POST/GET/DELETE /api/v1/admin/keys`). The plaintext secret is returned
     once, at creation, and stored as a sensitive value.
   - **`busbar_hook`** — register/read/replace/remove a routing hook
     (`POST/GET/PUT/DELETE /api/v1/admin/hooks`).
@@ -119,3 +119,18 @@ release workflow are in place. To publish under `registry.terraform.io/GetBusbar
 3. Register the provider on registry.terraform.io (add the GPG public key there).
 4. Push a `vX.Y.Z` tag — the release workflow runs GoReleaser and the registry ingests
    the resulting GitHub release.
+
+## busbar 1.5.5 compatibility
+
+Virtual keys use the signed `token` response. An omitted `allowed_pools` grants
+all pools; an explicit empty list grants none. Legacy per-key budget and rate
+attributes are rejected because these limits belong to gateway groups.
+Hooks require `module`, the name of an installed signed hook plugin. The removed
+`socket` and `webhook` attributes are rejected. Hook settings and config documents
+are sensitive; settings values cannot be recovered by import from redacted reads.
+Protect Terraform state, which still contains these sensitive values in plaintext.
+
+Admin requests have a 60-second timeout and a 16 MiB response limit. Redirects
+are not followed, and error response bodies are omitted from diagnostics to avoid
+credential disclosure. TLS configuration must be known before connection.
+Hook acceptance requires `BUSBAR_TEST_HOOK_MODULE` naming an installed gate plugin.

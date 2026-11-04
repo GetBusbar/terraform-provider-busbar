@@ -9,7 +9,11 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
+	"time"
+	"unicode"
 
 	"github.com/GetBusbar/terraform-provider-busbar/internal/apiclient"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -116,6 +120,11 @@ func (p *busbarProvider) Configure(ctx context.Context, req provider.ConfigureRe
 			"Unknown busbar token",
 			"The provider cannot be configured with an unknown token value.")
 	}
+	for name, unknown := range map[string]bool{"client_cert_pem": cfg.ClientCertPEM.IsUnknown(), "client_key_pem": cfg.ClientKeyPEM.IsUnknown(), "ca_cert_pem": cfg.CACertPEM.IsUnknown(), "insecure": cfg.Insecure.IsUnknown()} {
+		if unknown {
+			resp.Diagnostics.AddAttributeError(path.Root(name), "Unknown TLS configuration", "TLS configuration must be known before connecting to the admin API.")
+		}
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -138,6 +147,15 @@ func (p *busbarProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(endpoint, "#") {
+		resp.Diagnostics.AddAttributeError(path.Root("endpoint"), "Invalid busbar endpoint", "Use an absolute HTTP or HTTPS URL without credentials, query, or fragment.")
+		return
+	}
+	if strings.IndexFunc(token, unicode.IsControl) >= 0 {
+		resp.Diagnostics.AddAttributeError(path.Root("token"), "Invalid busbar token", "The admin token must not contain control characters.")
+		return
+	}
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid TLS configuration", err.Error())
@@ -187,8 +205,11 @@ func (p *busbarProvider) Resources(_ context.Context) []func() resource.Resource
 }
 
 // buildHTTPClient assembles an *http.Client honoring mTLS, a custom CA, and the
-// insecure escape hatch. When no TLS knobs are set it returns a default client.
+// insecure escape hatch. When no TLS knobs are set it uses the default transport.
 func buildHTTPClient(cfg busbarProviderModel) (*http.Client, error) {
+	if cfg.ClientCertPEM.IsUnknown() || cfg.ClientKeyPEM.IsUnknown() || cfg.CACertPEM.IsUnknown() || cfg.Insecure.IsUnknown() {
+		return nil, fmt.Errorf("TLS configuration must be known before connecting")
+	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	tlsConfigured := false
 
@@ -223,12 +244,12 @@ func buildHTTPClient(cfg busbarProviderModel) (*http.Client, error) {
 	}
 
 	if !tlsConfigured {
-		return &http.Client{}, nil
+		return adminHTTPClient(nil), nil
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = tlsCfg
-	return &http.Client{Transport: transport}, nil
+	return adminHTTPClient(transport), nil
 }
 
 func firstNonEmpty(a, b string) string {
@@ -236,4 +257,8 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func adminHTTPClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{Transport: transport, Timeout: 60 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 }

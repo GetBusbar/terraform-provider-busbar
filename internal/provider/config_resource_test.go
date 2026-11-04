@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -16,17 +19,15 @@ provider "busbar" {}
 resource "busbar_config" "test" {
   document = jsonencode({
     config = {
-      auth = null
       models = {
         test-model = { provider = "anthropic", max_concurrent = 1, max_requests = -1 }
       }
       providers = {
-        anthropic = { api_key_env = "ANTHROPIC_API_KEY" }
+        anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
       }
-      governance = {
-        enabled     = true
-        db_path     = "/var/lib/busbar/governance.db"
-        admin_token = "tfacc-admin-token"
+      auth = {
+        chain = ["keys"]
+        admin_auth = [{ "admin-tokens" = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }]
       }
     }
     providers = {
@@ -42,6 +43,7 @@ resource "busbar_config" "test" {
 // TF_ACC + a reachable gateway. NOTE: this bumps config_version, so run it
 // against a disposable gateway (the acceptance recipe container).
 func TestAccConfigResource(t *testing.T) {
+	var appliedVersion int64
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -52,9 +54,27 @@ func TestAccConfigResource(t *testing.T) {
 				Config: testAccConfigDoc,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("busbar_config.test", "id", "config"),
+					resource.TestCheckResourceAttrWith("busbar_config.test", "config_version", func(value string) error {
+						var err error
+						appliedVersion, err = strconv.ParseInt(value, 10, 64)
+						return err
+					}),
 					resource.TestMatchResourceAttr("busbar_config.test", "config_version",
 						regexp.MustCompile(`^[1-9][0-9]*$`)),
 				),
+			},
+			{
+				Config: strings.Replace(testAccConfigDoc, "max_concurrent = 1", "max_concurrent = 2", 1),
+				Check: resource.TestCheckResourceAttrWith("busbar_config.test", "config_version", func(value string) error {
+					version, err := strconv.ParseInt(value, 10, 64)
+					if err != nil {
+						return err
+					}
+					if version <= appliedVersion {
+						return fmt.Errorf("config version did not increase after update")
+					}
+					return nil
+				}),
 			},
 			// Import the singleton (document is not round-trippable, so ignore it).
 			{

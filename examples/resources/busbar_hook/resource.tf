@@ -1,21 +1,11 @@
-# Register a blocking "gate" hook reached over a webhook: it may inspect
-# (prompt = "ro") and rerank candidates before the request is dispatched.
+# The module must already be installed as a signed hook plugin on the gateway.
 resource "busbar_hook" "ranker" {
   name       = "quality-ranker"
   kind       = "gate"
-  webhook    = "https://ranker.internal.example/rank"
+  module     = "my-installed-ranker"
   prompt     = "ro"
   timeout_ms = 100
   priority   = 10
-  on_error   = "weighted" # fall back to the weighted floor if the hook errors
+  on_error   = "weighted"
   settings   = jsonencode({ min_score = 0.6 })
-}
-
-# A fire-and-forget "tap" hook over a unix socket for async usage telemetry.
-resource "busbar_hook" "usage_tap" {
-  name    = "usage-telemetry"
-  kind    = "tap"
-  socket  = "/run/busbar/usage.sock"
-  at      = "completion"
-  global  = true
 }

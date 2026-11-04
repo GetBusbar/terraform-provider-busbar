@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -21,12 +22,8 @@ var (
 	_ resource.ResourceWithImportState = (*hookResource)(nil)
 )
 
-// hookResource manages a routing/ranking hook: an external tap or gate reached
-// over a unix socket or a webhook, wired into the request pipeline. POST /hooks
-// registers, GET/PUT/DELETE /hooks/{name} read/replace/remove. The read shape
-// (HookView) collapses socket/webhook into a transport{kind,target} pair and
-// drops the write-only on_empty/default fields, so this resource models the
-// full write surface and projects reads back onto it.
+// hookResource manages an installed signed hook plugin. Reads expose the module
+// through transport{kind,target} and redact settings values, which stay in state.
 type hookResource struct {
 	client *adminClient
 }
@@ -39,6 +36,7 @@ func NewHookResource() resource.Resource {
 // hookModel maps busbar_hook state.
 type hookModel struct {
 	Name      types.String `tfsdk:"name"`
+	Module    types.String `tfsdk:"module"`
 	Kind      types.String `tfsdk:"kind"`
 	Socket    types.String `tfsdk:"socket"`
 	Webhook   types.String `tfsdk:"webhook"`
@@ -59,8 +57,7 @@ type hookModel struct {
 // off the wire so the server defaults apply.
 type hookCfg struct {
 	Kind      string          `json:"kind"`
-	Socket    *string         `json:"socket,omitempty"`
-	Webhook   *string         `json:"webhook,omitempty"`
+	Module    string          `json:"module"`
 	TimeoutMS *int64          `json:"timeout_ms,omitempty"`
 	OnError   *string         `json:"on_error,omitempty"`
 	Prompt    *string         `json:"prompt,omitempty"`
@@ -100,8 +97,8 @@ type hookView struct {
 }
 
 type hookTransport struct {
-	Kind   string  `json:"kind"`   // socket | webhook | none
-	Target *string `json:"target"` // path or URL; null when neither set
+	Kind   string  `json:"kind"`   // plugin | none
+	Target *string `json:"target"` // installed module name; null when no transport
 }
 
 func (r *hookResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -110,11 +107,9 @@ func (r *hookResource) Metadata(_ context.Context, req resource.MetadataRequest,
 
 func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A routing hook: an external tap or gate reached over a unix socket or webhook, " +
-			"wired into busbar's request/ranking pipeline (POST/GET/PUT/DELETE /api/v1/admin/hooks). " +
-			"Exactly one of socket or webhook must be set. The grant fields (kind, prompt, user) are " +
-			"immutable once registered — changing them replaces the hook.",
+		Description: "A routing hook backed by an installed signed plugin (POST/GET/PUT/DELETE /api/v1/admin/hooks). The grant fields kind, prompt, and user are immutable; changing them replaces the hook. Settings are sensitive and write-only on current gateways; import cannot recover them.",
 		Attributes: map[string]schema.Attribute{
+			"module": schema.StringAttribute{Required: true, Description: "Signed hook plugin name or alias installed on the gateway."},
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Unique hook name (<= 256 chars; not a reserved terminal name). Immutable; changing it replaces the hook.",
@@ -131,12 +126,14 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"socket": schema.StringAttribute{
-				Optional:    true,
-				Description: "Unix socket path to the hook process. Exactly one of socket or webhook.",
+				DeprecationMessage: "Removed in busbar 1.5; use module and plugin settings.",
+				Optional:           true,
+				Description:        "Unsupported since busbar 1.5; use module and plugin settings.",
 			},
 			"webhook": schema.StringAttribute{
-				Optional:    true,
-				Description: "Webhook URL for the hook. Exactly one of socket or webhook.",
+				DeprecationMessage: "Removed in busbar 1.5; use module and plugin settings.",
+				Optional:           true,
+				Description:        "Unsupported since busbar 1.5; use module and plugin settings.",
 			},
 			"timeout_ms": schema.Int64Attribute{
 				Optional:    true,
@@ -172,13 +169,14 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"at": schema.StringAttribute{
 				Optional:    true,
-				Description: "Pipeline stage: request, route, attempt, or completion. Null lets busbar place it by kind.",
+				Description: "Legacy pipeline stage: request, candidate, routing, or response. Null lets busbar place it by kind.",
 			},
 			"on_empty": schema.StringAttribute{
 				Optional:    true,
 				Description: "Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Write-only (not echoed by reads).",
 			},
 			"settings": schema.StringAttribute{
+				Sensitive:   true,
 				Optional:    true,
 				Computed:    true,
 				Description: "Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.",
@@ -186,7 +184,7 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"global": schema.BoolAttribute{
 				Optional:    true,
 				Computed:    true,
-				Description: "Whether the hook applies globally (all pools). Defaults to false. May read back true if wired via global_hooks.",
+				Description: "Whether the hook applies globally (all pools). Defaults to false. May read back true if attached globally.",
 			},
 			"default": schema.BoolAttribute{
 				Optional:    true,
@@ -213,12 +211,12 @@ func (r *hookResource) Configure(_ context.Context, req resource.ConfigureReques
 
 // buildCfg projects the model onto the write-side HookCfg.
 func (r *hookResource) buildCfg(m *hookModel) (hookCfg, error) {
-	cfg := hookCfg{Kind: m.Kind.ValueString()}
-	if !m.Socket.IsNull() && !m.Socket.IsUnknown() {
-		cfg.Socket = m.Socket.ValueStringPointer()
+	cfg := hookCfg{Kind: m.Kind.ValueString(), Module: m.Module.ValueString()}
+	if cfg.Module == "" {
+		return cfg, fmt.Errorf("module must name an installed hook plugin")
 	}
-	if !m.Webhook.IsNull() && !m.Webhook.IsUnknown() {
-		cfg.Webhook = m.Webhook.ValueStringPointer()
+	if !m.Socket.IsNull() && !m.Socket.IsUnknown() || !m.Webhook.IsNull() && !m.Webhook.IsUnknown() {
+		return cfg, fmt.Errorf("socket and webhook were removed in busbar 1.5; use module and plugin settings")
 	}
 	if !m.TimeoutMS.IsNull() && !m.TimeoutMS.IsUnknown() {
 		cfg.TimeoutMS = m.TimeoutMS.ValueInt64Pointer()
@@ -247,9 +245,9 @@ func (r *hookResource) buildCfg(m *hookModel) (hookCfg, error) {
 	if !m.Default.IsNull() && !m.Default.IsUnknown() {
 		cfg.Default = m.Default.ValueBoolPointer()
 	}
-	if !m.Settings.IsNull() && !m.Settings.IsUnknown() && m.Settings.ValueString() != "" {
+	if !m.Settings.IsNull() && !m.Settings.IsUnknown() {
 		raw := json.RawMessage(m.Settings.ValueString())
-		if !json.Valid(raw) {
+		if !json.Valid(raw) || len(raw) == 0 || rawFirstByte(raw) != '{' {
 			return cfg, fmt.Errorf("settings must be a valid JSON object")
 		}
 		cfg.Settings = raw
@@ -301,7 +299,7 @@ func (r *hookResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	httpResp, err := r.client.do(ctx, http.MethodGet, "/hooks/"+state.Name.ValueString(), nil, nil)
+	httpResp, err := r.client.do(ctx, http.MethodGet, "/hooks/"+url.PathEscape(state.Name.ValueString()), nil, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read hook", err.Error())
 		return
@@ -341,7 +339,7 @@ func (r *hookResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 	body := putHookReq{Config: cfg}
 
-	httpResp, err := r.client.do(ctx, http.MethodPut, "/hooks/"+plan.Name.ValueString(), body, nil)
+	httpResp, err := r.client.do(ctx, http.MethodPut, "/hooks/"+url.PathEscape(plan.Name.ValueString()), body, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update hook", err.Error())
 		return
@@ -370,7 +368,7 @@ func (r *hookResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
-	httpResp, err := r.client.do(ctx, http.MethodDelete, "/hooks/"+state.Name.ValueString(), nil, nil)
+	httpResp, err := r.client.do(ctx, http.MethodDelete, "/hooks/"+url.PathEscape(state.Name.ValueString()), nil, nil)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to delete hook", err.Error())
 		return
@@ -397,6 +395,10 @@ func applyHookView(m *hookModel, v *hookView) {
 	m.Name = types.StringValue(v.Name)
 	m.Kind = types.StringValue(v.Kind)
 	switch v.Transport.Kind {
+	case "plugin":
+		m.Module = optString(v.Transport.Target)
+		m.Socket = types.StringNull()
+		m.Webhook = types.StringNull()
 	case "socket":
 		m.Socket = optString(v.Transport.Target)
 		m.Webhook = types.StringNull()
@@ -414,10 +416,21 @@ func applyHookView(m *hookModel, v *hookView) {
 	m.Priority = types.Int64Value(v.Priority)
 	m.At = optString(v.At)
 	m.Global = types.BoolValue(v.Global)
-	// settings: normalize to a compact JSON string; empty object stays as "{}".
-	if len(v.Settings) == 0 || string(v.Settings) == "null" {
+	// Current gateways redact settings values. Keep the configured write-only bag.
+	if len(v.Settings) != 0 {
+		if m.Settings.IsNull() || m.Settings.IsUnknown() {
+			m.Settings = types.StringValue(string(v.Settings))
+		}
+	} else if m.Settings.IsUnknown() {
 		m.Settings = types.StringValue("{}")
-	} else {
-		m.Settings = types.StringValue(string(v.Settings))
 	}
+}
+
+func rawFirstByte(raw []byte) byte {
+	for _, b := range raw {
+		if b != ' ' && b != '\n' && b != '\r' && b != '\t' {
+			return b
+		}
+	}
+	return 0
 }

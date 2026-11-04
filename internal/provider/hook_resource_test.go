@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -10,28 +12,33 @@ import (
 // live gateway: register (POST), read-back, replace-in-place (PUT), import, then
 // destroy (DELETE). Gated on TF_ACC + a reachable gateway.
 func TestAccHookResource(t *testing.T) {
+	module := os.Getenv("BUSBAR_TEST_HOOK_MODULE")
+	if module == "" {
+		t.Skip("set BUSBAR_TEST_HOOK_MODULE to an installed signed gate plugin for hook acceptance")
+	}
 	resource.Test(t, resource.TestCase{
+		CheckDestroy:             testAccCheckDestroyed("busbar_hook", "hooks", "name", false),
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Register + Read.
 			{
-				Config: `
+				Config: strings.ReplaceAll(`
 provider "busbar" {}
 
 resource "busbar_hook" "test" {
   name       = "tfacc-hook"
   kind       = "gate"
-  webhook    = "https://hooks.internal.example/rank"
+  module     = "HOOK_MODULE"
   timeout_ms = 50
   priority   = 3
   settings   = jsonencode({ threshold = 0.5 })
 }
-`,
+`, "HOOK_MODULE", module),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("busbar_hook.test", "name", "tfacc-hook"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "kind", "gate"),
-					resource.TestCheckResourceAttr("busbar_hook.test", "webhook", "https://hooks.internal.example/rank"),
+					resource.TestCheckResourceAttr("busbar_hook.test", "module", module),
 					resource.TestCheckResourceAttr("busbar_hook.test", "timeout_ms", "50"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "priority", "3"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "prompt", "no"),
@@ -40,19 +47,19 @@ resource "busbar_hook" "test" {
 			},
 			// Replace in place (PUT): change timeout, priority, and settings.
 			{
-				Config: `
+				Config: strings.ReplaceAll(`
 provider "busbar" {}
 
 resource "busbar_hook" "test" {
   name       = "tfacc-hook"
   kind       = "gate"
-  webhook    = "https://hooks.internal.example/rank"
+  module     = "HOOK_MODULE"
   timeout_ms = 120
   priority   = 9
   on_error   = "reject"
   settings   = jsonencode({ threshold = 0.9 })
 }
-`,
+`, "HOOK_MODULE", module),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("busbar_hook.test", "timeout_ms", "120"),
 					resource.TestCheckResourceAttr("busbar_hook.test", "priority", "9"),
@@ -66,7 +73,7 @@ resource "busbar_hook" "test" {
 				ImportStateId:                        "tfacc-hook",
 				ImportStateVerify:                    true,
 				ImportStateVerifyIdentifierAttribute: "name",
-				ImportStateVerifyIgnore:              []string{"on_empty", "default"},
+				ImportStateVerifyIgnore:              []string{"on_empty", "default", "settings"},
 			},
 		},
 	})

@@ -73,8 +73,7 @@ func (r *configResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 		Description: "A GitOps singleton that owns the running busbar config and applies it wholesale " +
 			"(POST /api/v1/admin/config/apply). Manage at most ONE of these per gateway. The document " +
 			"is the full JSON config payload busbar boots from ({\"config\": {...}, \"providers\": {...}}); " +
-			"applying it bumps config_version. Applies are LIVE-ONLY by default — they revert to disk " +
-			"truth on the next reload or restart unless the gateway persists an overlay. Destroying this " +
+			"applying it bumps config_version. Full documents are live-only and revert to disk plus overlay on reload or restart; persist changes in config.yaml. The gateway must allow mutations with a writable overlay. Destroying this " +
 			"resource is a no-op on the gateway (there is no unapply); it only drops Terraform's tracking.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -85,7 +84,8 @@ func (r *configResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"document": schema.StringAttribute{
-				Required: true,
+				Required:  true,
+				Sensitive: true,
 				Description: "The full config apply document as a JSON string: {\"config\": {DeployCfg}, " +
 					"\"providers\": {name: ProviderDef}}. The `config` key is required; `providers` is optional. " +
 					"This is the write model (the boot-file shape), NOT the redacted read projection returned by GET /config.",
@@ -139,6 +139,10 @@ func (r *configResource) apply(ctx context.Context, document string, diags inter
 	var view applyConfigView
 	if err := httpResp.decode(&view); err != nil {
 		diags.AddError("Failed to decode config apply response", err.Error())
+		return 0, false
+	}
+	if !view.Applied {
+		diags.AddError("Config was not applied", "The gateway did not acknowledge applying the configuration.")
 		return 0, false
 	}
 	return view.ConfigVersion, true
@@ -220,5 +224,9 @@ func (r *configResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *
 // is a redacted, non-round-trippable projection), so the operator must supply the
 // matching `document` in config after import; only config_version is read live.
 func (r *configResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if req.ID != configSingletonID {
+		resp.Diagnostics.AddError("Invalid config import ID", "The config singleton must be imported as config.")
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

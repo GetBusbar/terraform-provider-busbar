@@ -31,7 +31,7 @@ output "compiled_auth_modules" {
 ### Read-Only
 
 - `auth_modules` (List of String) Auth modules compiled into this binary (the compliance-by-compilation proof).
-- `config_persistence` (Boolean) Whether API-applied config changes are durable across restarts (BUSBAR_CONFIG_OVERLAY set) versus live-only.
+- `config_persistence` (Boolean) Whether a writable gateway overlay is available for config mutations; false indicates locked config. Full config apply documents remain live-only.
 - `config_version` (Number) Monotonic config version — 0 at boot, +1 per API config apply. Process-local; resets on restart.
 - `hook_plugins` (List of String) Hook plugins compiled into this binary.
 - `models` (Number) Number of configured model lanes.

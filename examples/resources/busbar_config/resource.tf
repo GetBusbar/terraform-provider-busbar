@@ -2,23 +2,21 @@
 # busbar_config per gateway. The document is the JSON payload busbar boots from,
 # an envelope of { config = {DeployCfg}, providers = {name = ProviderDef} }.
 #
-# Applies are live-only by default: they revert to disk truth on the next reload
-# or restart unless the gateway persists an overlay. Destroying this resource is a
+# Full config applies are live-only: they revert to disk plus overlay on reload
+# or restart. Persist the source document in config.yaml. Destroying this resource is a
 # no-op on the gateway (there is no "unapply"); it only drops Terraform's tracking.
 resource "busbar_config" "running" {
   document = jsonencode({
     config = {
-      auth = null
       models = {
         "claude-sonnet" = { provider = "anthropic", max_concurrent = 8, max_requests = -1 }
       }
       providers = {
-        anthropic = { api_key_env = "ANTHROPIC_API_KEY" }
+        anthropic = { api_key = { env = "ANTHROPIC_API_KEY" } }
       }
-      governance = {
-        enabled     = true
-        db_path     = "/var/lib/busbar/governance.db"
-        admin_token = var.busbar_admin_token
+      auth = {
+        chain = ["keys"]
+        admin_auth = [{ "admin-tokens" = { token = { env = "BUSBAR_ADMIN_TOKEN" } } }]
       }
     }
     providers = {

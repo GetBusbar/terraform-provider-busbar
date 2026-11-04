@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/GetBusbar/terraform-provider-busbar/internal/apiclient"
@@ -89,9 +88,8 @@ func (d *infoDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, r
 					"value means a restart (config_version resets), never a config revert.",
 			},
 			"config_persistence": schema.BoolAttribute{
-				Computed: true,
-				Description: "Whether API-applied config changes are durable across restarts " +
-					"(BUSBAR_CONFIG_OVERLAY set) versus live-only.",
+				Computed:    true,
+				Description: "Whether a writable gateway overlay is available for config mutations; false indicates locked config. Full config apply documents remain live-only.",
 			},
 			"config_version": schema.Int64Attribute{
 				Computed: true,
@@ -146,12 +144,12 @@ func (d *infoDataSource) Configure(_ context.Context, req datasource.ConfigureRe
 func (d *infoDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
 	httpResp, err := d.client.GetApiV1AdminInfo(ctx)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read busbar info", err.Error())
+		resp.Diagnostics.AddError("Failed to read busbar info", adminRequestError(err).Error())
 		return
 	}
 	defer httpResp.Body.Close()
 
-	body, err := io.ReadAll(httpResp.Body)
+	body, err := readAdminBody(httpResp.Body)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read busbar info response body", err.Error())
 		return
@@ -160,14 +158,14 @@ func (d *infoDataSource) Read(ctx context.Context, _ datasource.ReadRequest, res
 	if httpResp.StatusCode != http.StatusOK {
 		resp.Diagnostics.AddError(
 			"busbar admin API returned an error",
-			fmt.Sprintf("GET /api/v1/admin/info returned %s: %s", httpResp.Status, string(body)),
+			fmt.Sprintf("GET /api/v1/admin/info returned %d: %s", httpResp.StatusCode, (&adminResponse{Body: body}).errorMessage()),
 		)
 		return
 	}
 
 	var info infoResponse
 	if err := json.Unmarshal(body, &info); err != nil {
-		resp.Diagnostics.AddError("Failed to decode busbar info response", err.Error())
+		resp.Diagnostics.AddError("Failed to decode busbar info response", "The gateway returned invalid JSON for the info response.")
 		return
 	}
 

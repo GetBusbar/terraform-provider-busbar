@@ -3,29 +3,23 @@
 page_title: "busbar_virtual_key Resource - busbar"
 subcategory: ""
 description: |-
-  A governance virtual key: a mintable, revocable credential with budget and rate caps scoped to a set of pools (POST/GET/PATCH/DELETE /api/v1/admin/keys). The plaintext secret is returned by busbar only once, at creation, and is stored in state as a sensitive value; refreshes update metadata (budget/limits/enabled) but never the secret. Requires governance: to be enabled on the gateway.
+  A signed, expiring busbar virtual key scoped to pools. The bearer token is returned once at creation and stored as a sensitive value. Budget and rate limits belong to gateway groups in busbar 1.5 and later; legacy key limit attributes are rejected.
 ---
 
 # busbar_virtual_key (Resource)
 
-A governance virtual key: a mintable, revocable credential with budget and rate caps scoped to a set of pools (POST/GET/PATCH/DELETE /api/v1/admin/keys). The plaintext secret is returned by busbar only once, at creation, and is stored in state as a sensitive value; refreshes update metadata (budget/limits/enabled) but never the secret. Requires `governance:` to be enabled on the gateway.
+A signed, expiring busbar virtual key scoped to pools. The bearer token is returned once at creation and stored as a sensitive value. Budget and rate limits belong to gateway groups in busbar 1.5 and later; legacy key limit attributes are rejected.
 
 ## Example Usage
 
 ```terraform
-# Mint a governance virtual key with a daily budget and a request-rate cap,
-# scoped to the "smart" pool. The plaintext secret is returned only once, at
-# creation, and stored in state as a sensitive value.
+# Mint a signed key scoped to the smart pool. Budget and rate limits live on
+# gateway groups in busbar 1.5 and later, never on individual keys.
 resource "busbar_virtual_key" "app" {
-  name             = "checkout-service"
-  budget_period    = "daily"
-  max_budget_cents = 5000 # $50/day
-  rpm_limit        = 60
-  tpm_limit        = 200000
-  allowed_pools    = ["smart"]
+  name          = "checkout-service"
+  allowed_pools = ["smart"]
 }
 
-# The bearer secret (sk-bb-...) — hand this to the calling application.
 output "app_key_secret" {
   value     = busbar_virtual_key.app.secret
   sensitive = true
@@ -41,12 +35,12 @@ output "app_key_secret" {
 
 ### Optional
 
-- `allowed_pools` (List of String) Pools this key may target. Empty/unset means unrestricted. Immutable; changing it replaces the key (the mint spec is fixed at creation).
-- `budget_period` (String) Budget window: one of total, daily, monthly. Defaults to total. Immutable; changing it replaces the key.
+- `allowed_pools` (List of String) Pools this key may target. Unset means all pools; an empty list means no pools. Immutable; changing it replaces the key (the mint spec is fixed at creation).
+- `budget_period` (String, Deprecated) Unsupported since busbar 1.5; configure budget windows on gateway groups.
 - `issue_aws_credential` (Boolean) When true, also mint an AWS-style access-key-id + secret access key (SigV4/Bedrock inbound auth). Both are returned only at creation. Immutable.
-- `max_budget_cents` (Number) Spend cap in cents over the budget window (>= 0). Omit for unlimited. Mutable via PATCH.
-- `rpm_limit` (Number) Requests-per-minute cap (>= 1). Omit for unlimited. Mutable via PATCH.
-- `tpm_limit` (Number) Tokens-per-minute cap (>= 1). Omit for unlimited. Mutable via PATCH.
+- `max_budget_cents` (Number, Deprecated) Unsupported since busbar 1.5; configure spend limits on gateway groups.
+- `rpm_limit` (Number, Deprecated) Unsupported since busbar 1.5; configure rate limits on gateway groups.
+- `tpm_limit` (Number, Deprecated) Unsupported since busbar 1.5; configure rate limits on gateway groups.
 
 ### Read-Only
 
@@ -55,7 +49,7 @@ output "app_key_secret" {
 - `created_at` (Number) Epoch seconds the key was minted.
 - `enabled` (Boolean) Whether the key currently resolves. A key is created enabled; disable it out-of-band via the admin API.
 - `id` (String) Server-assigned key id (e.g. vk_0123456789abcdef).
-- `secret` (String, Sensitive) The plaintext bearer secret (sk-bb-...). Returned only at creation; stored in state and never re-read.
+- `secret` (String, Sensitive) The signed bearer token. Returned only at creation; stored in state and never re-read.
 
 ## Import
 
