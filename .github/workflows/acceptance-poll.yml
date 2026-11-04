@@ -223,7 +223,7 @@ jobs:
 
   open-issue-on-fail:
     needs: [check, acceptance]
-    if: needs.check.outputs.run == 'true' && needs.acceptance.outputs.result == 'fail'
+    if: always() && needs.check.outputs.run == 'true' && (needs.acceptance.result == 'failure' || needs.acceptance.outputs.result == 'fail')
     runs-on: ubuntu-latest
     steps:
       - env:
