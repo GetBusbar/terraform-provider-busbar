@@ -43,6 +43,12 @@ import os, pathlib, sys
 if sys.argv[1] == "keygen":
     print("private key: " + ("bad" if os.environ.get("BAD_KEYS") else "a" * 64))
     print("public key: " + "b" * 64)
+elif sys.argv[1] == "verify":
+    assert sys.argv[sys.argv.index("--keys") + 1] == "b" * 64
+    assert sys.argv[sys.argv.index("--name") + 1] == "tfacc-gate"
+    if os.environ.get("BAD_VERIFY"):
+        sys.exit(1)
+    print("VERIFIED tfacc-gate")
 else:
     assert os.environ["BUSBAR_SIGN_KEY"] == "a" * 64
     assert sys.argv[sys.argv.index("--kind") + 1] == "hook"
@@ -76,12 +82,14 @@ exec sleep 120
         self.assertIn("busbar-contract", calls[2]["argv"])
         self.assertTrue(all("--locked" in call["argv"] for call in calls))
         self.assertTrue((self.state / "plugins/tfacc-gate.tar.gz").is_file())
+        self.assertEqual((self.state / "release-public-key.txt").read_text(), "b" * 64 + "\n")
+        self.assertEqual((self.state / "plugin-verification.txt").read_text(), "VERIFIED tfacc-gate\n")
         self.assertIn(str(HERE / "gate.rs"), self.manifest.read_text())
         self.assertEqual(self.gateway("build").returncode, 0)
         self.assertEqual(self.manifest.read_text().count('name = "tfacc_gate"'), 1)
 
     def test_build_rejects_missing_library_and_malformed_keys(self):
-        for variable in ("OMIT_LIBRARY", "BAD_KEYS"):
+        for variable in ("OMIT_LIBRARY", "BAD_KEYS", "BAD_VERIFY"):
             with self.subTest(variable=variable):
                 self.env[variable] = "1"
                 self.assertNotEqual(self.gateway("build").returncode, 0)
@@ -124,6 +132,9 @@ print({json.dumps(health)!r} if any(arg.endswith("/health") for arg in sys.argv)
         self.assertNotIn("allow_unsigned", config)
         self.assertFalse(json.loads(config)["admin_require_mtls"])
         self.assertEqual(json.loads(config)["auth"]["admin_auth"], ["admin-tokens"])
+        self.assertEqual(json.loads(config)["providers_file"], str(self.state / "providers.json"))
+        self.assertEqual(json.loads((self.state / "providers.json").read_text()),
+                         {"anthropic": {"protocol": "anthropic", "base_url": "https://api.anthropic.com"}})
 
     def test_runner_rejects_skips_missing_module_and_failed_tests(self):
         for output, code, expected in (

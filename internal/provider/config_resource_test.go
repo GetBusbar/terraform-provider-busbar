@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,12 +24,23 @@ func testAccConfigDocuments(t *testing.T) (string, string) {
 		t.Fatalf("read BUSBAR_TEST_CONFIG_FILE: %v", err)
 	}
 	var config map[string]interface{}
-	if err := json.Unmarshal(data, &config); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&config); err != nil {
 		t.Fatalf("decode acceptance boot config: %v", err)
 	}
+	providersPath, ok := config["providers_file"].(string)
+	if !ok || providersPath == "" {
+		t.Fatal("acceptance config is missing providers_file")
+	}
+	providers, err := os.ReadFile(providersPath)
+	if err != nil || !json.Valid(providers) {
+		t.Fatalf("read JSON acceptance provider catalog: %v", err)
+	}
 	document := func() string {
-		// Providers is optional: preserve the gateway's current provider catalog.
-		payload, err := json.Marshal(map[string]interface{}{"config": config})
+		// Apply validates the proposed catalog independently; omission means empty.
+		// Carry the exact boot catalog, keeping number tokens intact in both documents.
+		payload, err := json.Marshal(map[string]interface{}{"config": config, "providers": json.RawMessage(providers)})
 		if err != nil {
 			t.Fatalf("encode acceptance config: %v", err)
 		}

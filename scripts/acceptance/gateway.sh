@@ -44,6 +44,7 @@ PY
       [[ "$private" =~ ^[0-9a-fA-F]{64}$ && "$public" =~ ^[0-9a-fA-F]{64}$ ]] || {
         echo 'unparseable ephemeral signing keypair' >&2; exit 1;
       }
+      printf '%s\n' "$public" > "$state_dir/release-public-key.txt"
       BUSBAR_RELEASE_PUBKEY="$public" cargo build --locked --release \
         --manifest-path dist/default/Cargo.toml --target-dir "$target_dir" --bin busbar
       cargo build --locked --release --target-dir "$target_dir" \
@@ -54,6 +55,8 @@ PY
         --name "$module" --alias "$module" --kind hook \
         --publisher busbar --license Apache-2.0 --out "$state_dir/plugins/$module.tar.gz"
       test -s "$state_dir/plugins/$module.tar.gz"
+      "$pack" verify "$state_dir/plugins/$module.tar.gz" --keys "$public" \
+        --name "$module" > "$state_dir/plugin-verification.txt"
     )
     ;;
   boot)
@@ -66,7 +69,10 @@ import json
 import pathlib
 import sys
 state = pathlib.Path(sys.argv[1])
+catalog = {"anthropic": {"protocol": "anthropic", "base_url": "https://api.anthropic.com"}}
+(state / "providers.json").write_text(json.dumps(catalog, indent=2) + "\n")
 config = {
+    "providers_file": str(state / "providers.json"),
     "listen": "127.0.0.1:8080",
     "admin_listen": "127.0.0.1:8081",
     "admin_require_mtls": False,
@@ -89,7 +95,7 @@ config = {
 (state / "config.yaml").write_text(json.dumps(config, indent=2) + "\n")
 PYCONFIG
     ANTHROPIC_API_KEY=dummy BUSBAR_ADMIN_TOKEN=tfacc-admin-token \
-      BUSBAR_CONFIG="$state_dir/config.yaml" BUSBAR_PROVIDERS="$source_dir/providers.yaml" \
+      BUSBAR_CONFIG="$state_dir/config.yaml" \
       "$gateway" > "$state_dir/busbar.log" 2>&1 &
     pid=$!
     echo "$pid" > "$state_dir/pid"
