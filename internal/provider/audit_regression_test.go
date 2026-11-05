@@ -168,7 +168,7 @@ func TestHookReadEscapesIdentity(t *testing.T) {
 	var schemaResp resource.SchemaResponse
 	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
 	state := tfsdk.State{Schema: schemaResp.Schema}
-	m := hookModel{Name: types.StringValue("name?query#fragment")}
+	m := hookModel{Name: types.StringValue("name?query#fragment"), Phase: types.ListNull(types.StringType)}
 	if diags := state.Set(ctx, &m); diags.HasError() {
 		t.Fatal(diags)
 	}

@@ -76,7 +76,7 @@ resource "busbar_hook" "test" {
 				ImportStateId:                        "tfacc-hook",
 				ImportStateVerify:                    true,
 				ImportStateVerifyIdentifierAttribute: "name",
-				ImportStateVerifyIgnore:              []string{"on_empty", "default", "settings"},
+				ImportStateVerifyIgnore:              []string{"settings"},
 			},
 		},
 	})

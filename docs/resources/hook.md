@@ -37,11 +37,11 @@ resource "busbar_hook" "ranker" {
 
 ### Optional
 
-- `at` (String) Legacy pipeline stage: request, candidate, routing, or response. Null lets busbar place it by kind.
-- `default` (Boolean) Whether this hook is the default for its stage. Write-only (not echoed by reads).
+- `default` (Boolean) Whether this hook is the default for its stage. Defaults to false.
 - `global` (Boolean) Whether the hook applies globally (all pools). Defaults to false. May read back true if attached globally.
-- `on_empty` (String) Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Write-only (not echoed by reads).
+- `on_empty` (String) Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Unset reads back null.
 - `on_error` (String) Behavior when the hook errors/times out: a terminal (weighted, reject, first, nothing) or another hook name. Defaults to nothing.
+- `phase` (List of String) Configured pipeline stages: request, candidate, routing, or response. Omitted or empty selects all four core stages. Reads preserve the configured list.
 - `priority` (Number) Ordering priority within a stage. Defaults to 0.
 - `prompt` (String) Prompt-content access grant: no, ro, or rw. Defaults to no. Immutable grant; changing it replaces the hook. (rw is invalid on a tap.)
 - `settings` (String, Sensitive) Opaque per-hook settings as a JSON object string (<= 64KiB, <= 256 keys). Defaults to {}.

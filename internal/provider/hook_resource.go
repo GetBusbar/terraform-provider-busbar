@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -45,7 +46,7 @@ type hookModel struct {
 	Prompt    types.String `tfsdk:"prompt"`
 	User      types.String `tfsdk:"user"`
 	Priority  types.Int64  `tfsdk:"priority"`
-	At        types.String `tfsdk:"at"`
+	Phase     types.List   `tfsdk:"phase"`
 	OnEmpty   types.String `tfsdk:"on_empty"`
 	Settings  types.String `tfsdk:"settings"`
 	Global    types.Bool   `tfsdk:"global"`
@@ -63,7 +64,7 @@ type hookCfg struct {
 	Prompt    *string         `json:"prompt,omitempty"`
 	User      *string         `json:"user,omitempty"`
 	Priority  *int64          `json:"priority,omitempty"`
-	At        *string         `json:"at,omitempty"`
+	Phase     *[]string       `json:"phase,omitempty"`
 	OnEmpty   *string         `json:"on_empty,omitempty"`
 	Settings  json.RawMessage `json:"settings,omitempty"`
 	Global    *bool           `json:"global,omitempty"`
@@ -89,8 +90,10 @@ type hookView struct {
 	Prompt    string          `json:"prompt"`
 	User      string          `json:"user"`
 	Priority  int64           `json:"priority"`
-	At        *string         `json:"at"`
+	Phase     []string        `json:"phase"`
 	OnError   string          `json:"on_error"`
+	OnEmpty   *string         `json:"on_empty"`
+	Default   bool            `json:"default"`
 	TimeoutMS int64           `json:"timeout_ms"`
 	Settings  json.RawMessage `json:"settings"`
 	Global    bool            `json:"global"`
@@ -167,13 +170,16 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 				Description: "Ordering priority within a stage. Defaults to 0.",
 			},
-			"at": schema.StringAttribute{
+			"phase": schema.ListAttribute{
+				ElementType: types.StringType,
 				Optional:    true,
-				Description: "Legacy pipeline stage: request, candidate, routing, or response. Null lets busbar place it by kind.",
+				Computed:    true,
+				Description: "Configured pipeline stages: request, candidate, routing, or response. Omitted or empty selects all four core stages. Reads preserve the configured list.",
 			},
 			"on_empty": schema.StringAttribute{
 				Optional:    true,
-				Description: "Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Write-only (not echoed by reads).",
+				Computed:    true,
+				Description: "Fallback policy when the hook yields an empty ranking: weighted, reject, or first. Unset reads back null.",
 			},
 			"settings": schema.StringAttribute{
 				Sensitive:   true,
@@ -188,7 +194,8 @@ func (r *hookResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"default": schema.BoolAttribute{
 				Optional:    true,
-				Description: "Whether this hook is the default for its stage. Write-only (not echoed by reads).",
+				Computed:    true,
+				Description: "Whether this hook is the default for its stage. Defaults to false.",
 			},
 		},
 	}
@@ -233,8 +240,21 @@ func (r *hookResource) buildCfg(m *hookModel) (hookCfg, error) {
 	if !m.Priority.IsNull() && !m.Priority.IsUnknown() {
 		cfg.Priority = m.Priority.ValueInt64Pointer()
 	}
-	if !m.At.IsNull() && !m.At.IsUnknown() {
-		cfg.At = m.At.ValueStringPointer()
+	if !m.Phase.IsNull() && !m.Phase.IsUnknown() {
+		phase := make([]string, 0, len(m.Phase.Elements()))
+		for _, element := range m.Phase.Elements() {
+			stage, ok := element.(types.String)
+			if !ok || stage.IsNull() || stage.IsUnknown() {
+				return cfg, fmt.Errorf("phase must contain known, non-null stage names")
+			}
+			switch stage.ValueString() {
+			case "request", "candidate", "routing", "response":
+				phase = append(phase, stage.ValueString())
+			default:
+				return cfg, fmt.Errorf("phase stages must be request, candidate, routing, or response")
+			}
+		}
+		cfg.Phase = &phase
 	}
 	if !m.OnEmpty.IsNull() && !m.OnEmpty.IsUnknown() {
 		cfg.OnEmpty = m.OnEmpty.ValueStringPointer()
@@ -381,16 +401,14 @@ func (r *hookResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	}
 }
 
-// ImportState brings an existing hook under management by name. Write-only fields
-// (on_empty, default) and the socket/webhook split are recovered from the read
-// projection where possible; on_empty/default stay null after an import.
+// ImportState brings an existing hook under management by name. Settings remain
+// write-only; the other attributes are recovered from the read projection.
 func (r *hookResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
 // applyHookView folds a HookView projection back onto the model. The read shape
-// collapses socket/webhook into transport{kind,target}, so split it back out and
-// leave the write-only fields (on_empty, default) untouched.
+// collapses socket/webhook into transport{kind,target}, so split it back out.
 func applyHookView(m *hookModel, v *hookView) {
 	m.Name = types.StringValue(v.Name)
 	m.Kind = types.StringValue(v.Kind)
@@ -411,10 +429,16 @@ func applyHookView(m *hookModel, v *hookView) {
 	}
 	m.TimeoutMS = types.Int64Value(v.TimeoutMS)
 	m.OnError = types.StringValue(v.OnError)
+	m.OnEmpty = optString(v.OnEmpty)
+	m.Default = types.BoolValue(v.Default)
 	m.Prompt = types.StringValue(v.Prompt)
 	m.User = types.StringValue(v.User)
 	m.Priority = types.Int64Value(v.Priority)
-	m.At = optString(v.At)
+	phase := make([]attr.Value, 0, len(v.Phase))
+	for _, stage := range v.Phase {
+		phase = append(phase, types.StringValue(stage))
+	}
+	m.Phase = types.ListValueMust(types.StringType, phase)
 	m.Global = types.BoolValue(v.Global)
 	// Current gateways redact settings values. Keep the configured write-only bag.
 	if len(v.Settings) != 0 {
