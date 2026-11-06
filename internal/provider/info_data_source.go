@@ -29,9 +29,9 @@ func NewInfoDataSource() datasource.DataSource {
 	return &infoDataSource{}
 }
 
-// infoModel maps the /info response into Terraform state. The `/info` operation
-// carries no response schema in the OpenAPI contract, so the shape is modeled
-// here against busbar's InfoView (docs/admin-api.md, crate admin::v1::contract).
+// infoModel maps the published InfoView response into the existing Terraform
+// state attributes. Read keeps an explicit integer projection so values outside
+// Terraform's signed Int64 state range are rejected without truncation.
 type infoModel struct {
 	Version           types.String `tfsdk:"version"`
 	UptimeSeconds     types.Int64  `tfsdk:"uptime_seconds"`
@@ -142,7 +142,7 @@ func (d *infoDataSource) Configure(_ context.Context, req datasource.ConfigureRe
 }
 
 func (d *infoDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
-	httpResp, err := d.client.GetApiV1AdminInfo(ctx)
+	httpResp, err := d.client.GetInfo(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read busbar info", adminRequestError(err).Error())
 		return
@@ -165,7 +165,7 @@ func (d *infoDataSource) Read(ctx context.Context, _ datasource.ReadRequest, res
 
 	var info infoResponse
 	if err := json.Unmarshal(body, &info); err != nil {
-		resp.Diagnostics.AddError("Failed to decode busbar info response", "The gateway returned invalid JSON for the info response.")
+		resp.Diagnostics.AddError("Failed to decode busbar info response", "The gateway returned an info response that cannot be represented by the Terraform data source.")
 		return
 	}
 

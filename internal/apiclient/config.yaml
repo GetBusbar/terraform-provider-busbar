@@ -7,6 +7,9 @@ generate:
   models: true
   client: true
 output-options:
+  # The provider uses the generated info call; resources use their existing
+  # explicit JSON HTTP boundary. Keep this generated surface derived and small.
+  include-operation-ids: [GetInfo]
   # Keep the generated surface lean and skip the embedded-spec blob; the provider
   # supplies its own *http.Client (mTLS / CA pool / auth header) at construction.
   skip-prune: false
