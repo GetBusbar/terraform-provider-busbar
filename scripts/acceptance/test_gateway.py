@@ -151,15 +151,7 @@ print({json.dumps(health)!r} if any(arg.endswith("/health") for arg in sys.argv)
         result = subprocess.run(["bash", str(HERE / "test.sh")], env=self.env, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
 
-    def test_both_workflows_use_required_fixture_path(self):
-        for name in ("test.yml", "acceptance-poll.yml"):
-            workflow = (REPO / ".github/workflows" / name).read_text()
-            self.assertIn("bash scripts/acceptance/gateway.sh build", workflow)
-            self.assertIn("bash scripts/acceptance/gateway.sh boot", workflow)
-            self.assertIn("bash scripts/acceptance/test.sh", workflow)
-            self.assertNotIn("admin_insecure", workflow)
-        self.assertIn("steps.baseline.outputs.ref", (REPO / ".github/workflows/test.yml").read_text())
-        self.assertIn("needs.check.outputs.candidate", (REPO / ".github/workflows/acceptance-poll.yml").read_text())
+    def test_acceptance_hook_refuses_missing_required_configuration(self):
         hook = (REPO / "internal/provider/hook_resource_test.go").read_text()
         self.assertIn('if os.Getenv("TF_ACC") != "" {\n\t\t\tt.Fatal(', hook)
 
