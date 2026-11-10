@@ -338,6 +338,145 @@ func TestConfigUpdateSendsPlannedDocument(t *testing.T) {
 	}
 }
 
+func TestHookDeleteIdempotent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		wantError  bool
+		wantEscape bool
+	}{
+		{"success", http.StatusNoContent, false, true},
+		{"already_gone", http.StatusNotFound, false, true},
+		{"server_error", http.StatusInternalServerError, true, true},
+		{"forbidden", http.StatusForbidden, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath atomic.Value
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("method = %q, want DELETE", r.Method)
+				}
+				gotPath.Store(r.URL.EscapedPath())
+				if tc.status == http.StatusInternalServerError || tc.status == http.StatusForbidden {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"error":{"code":"internal"}}`))
+					return
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+			r := hookResource{client: newAdminClient(server.URL, "token", server.Client())}
+			ctx := context.Background()
+			var schemaResp resource.SchemaResponse
+			r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+			state := tfsdk.State{Schema: schemaResp.Schema}
+			m := hookModel{Name: types.StringValue("hook/special"), Phase: types.ListNull(types.StringType)}
+			if diagnostics := state.Set(ctx, &m); diagnostics.HasError() {
+				t.Fatal(diagnostics)
+			}
+			response := resource.DeleteResponse{State: state}
+			r.Delete(ctx, resource.DeleteRequest{State: state}, &response)
+			if response.Diagnostics.HasError() != tc.wantError {
+				t.Fatalf("diagnostics error = %v, want %v: %v", response.Diagnostics.HasError(), tc.wantError, response.Diagnostics)
+			}
+			if tc.wantEscape {
+				if gotPath.Load() != "/api/v1/admin/hooks/hook%2Fspecial" {
+					t.Fatalf("wrong delete path %v", gotPath.Load())
+				}
+			}
+		})
+	}
+}
+
+func TestVirtualKeyDeleteIdempotent(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		wantError bool
+	}{
+		{"revoked", http.StatusNoContent, false},
+		{"already_gone", http.StatusNotFound, false},
+		{"server_error", http.StatusInternalServerError, true},
+		{"forbidden", http.StatusForbidden, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotMethod, gotPath atomic.Value
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod.Store(r.Method)
+				gotPath.Store(r.URL.EscapedPath())
+				if tc.status >= 400 {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"error":{"code":"internal"}}`))
+					return
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+			r := virtualKeyResource{client: newAdminClient(server.URL, "token", server.Client())}
+			ctx := context.Background()
+			var schemaResp resource.SchemaResponse
+			r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+			state := tfsdk.State{Schema: schemaResp.Schema}
+			m := virtualKeyModel{ID: types.StringValue("vk_abc123"), Name: types.StringValue("key"), AllowedPools: types.ListNull(types.StringType)}
+			if diagnostics := state.Set(ctx, &m); diagnostics.HasError() {
+				t.Fatal(diagnostics)
+			}
+			response := resource.DeleteResponse{State: state}
+			r.Delete(ctx, resource.DeleteRequest{State: state}, &response)
+			if response.Diagnostics.HasError() != tc.wantError {
+				t.Fatalf("diagnostics error = %v, want %v: %v", response.Diagnostics.HasError(), tc.wantError, response.Diagnostics)
+			}
+			if gotMethod.Load() != http.MethodDelete {
+				t.Fatalf("method = %v, want DELETE", gotMethod.Load())
+			}
+			if gotPath.Load() != "/api/v1/admin/keys/vk_abc123" {
+				t.Fatalf("wrong delete path %v", gotPath.Load())
+			}
+		})
+	}
+}
+
+func TestConfigReadRefreshesVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != adminPrefix+"/config" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"version":42}`))
+	}))
+	defer server.Close()
+	r := configResource{client: newAdminClient(server.URL, "token", server.Client())}
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	state := tfsdk.State{Schema: schemaResp.Schema}
+	m := configModel{
+		ID:            types.StringValue("config"),
+		Document:      types.StringValue(`{"config":{}}`),
+		ConfigVersion: types.Int64Value(1),
+	}
+	if diagnostics := state.Set(ctx, &m); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	response := resource.ReadResponse{State: state}
+	r.Read(ctx, resource.ReadRequest{State: state}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatal(response.Diagnostics)
+	}
+	var result configModel
+	if diagnostics := response.State.Get(ctx, &result); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	if result.ConfigVersion.ValueInt64() != 42 {
+		t.Fatalf("config version = %d, want 42", result.ConfigVersion.ValueInt64())
+	}
+	if result.Document.ValueString() != `{"config":{}}` {
+		t.Fatal("document was modified during read")
+	}
+	if result.ID.ValueString() != "config" {
+		t.Fatal("id was modified during read")
+	}
+}
+
 func TestKeyReadRemovesTombstone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"vk_deleted","name":"key","state":"tombstoned","enabled":false}`))

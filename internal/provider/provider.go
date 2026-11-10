@@ -247,7 +247,12 @@ func buildHTTPClient(cfg busbarProviderModel) (*http.Client, error) {
 		return adminHTTPClient(nil), nil
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = dt.Clone()
+	} else {
+		transport = &http.Transport{}
+	}
 	transport.TLSClientConfig = tlsCfg
 	return adminHTTPClient(transport), nil
 }

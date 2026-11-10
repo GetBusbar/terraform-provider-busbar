@@ -414,7 +414,11 @@ func applyHookView(m *hookModel, v *hookView) {
 	m.Kind = types.StringValue(v.Kind)
 	switch v.Transport.Kind {
 	case "plugin":
-		m.Module = optString(v.Transport.Target)
+		// Only overwrite Module when the server provides a non-nil target;
+		// a nil target would null out the Required attribute.
+		if v.Transport.Target != nil {
+			m.Module = types.StringValue(*v.Transport.Target)
+		}
 		m.Socket = types.StringNull()
 		m.Webhook = types.StringNull()
 	case "socket":
@@ -434,11 +438,17 @@ func applyHookView(m *hookModel, v *hookView) {
 	m.Prompt = types.StringValue(v.Prompt)
 	m.User = types.StringValue(v.User)
 	m.Priority = types.Int64Value(v.Priority)
-	phase := make([]attr.Value, 0, len(v.Phase))
-	for _, stage := range v.Phase {
-		phase = append(phase, types.StringValue(stage))
+	// Phase is Optional+Computed: preserve the configured list when it is already
+	// set so that a semantically equivalent server response (e.g. expanded default
+	// stages for an empty configured list) does not cause an inconsistent-result
+	// error. Only populate from the server when the model has no prior value.
+	if m.Phase.IsNull() || m.Phase.IsUnknown() {
+		phase := make([]attr.Value, 0, len(v.Phase))
+		for _, stage := range v.Phase {
+			phase = append(phase, types.StringValue(stage))
+		}
+		m.Phase = types.ListValueMust(types.StringType, phase)
 	}
-	m.Phase = types.ListValueMust(types.StringType, phase)
 	m.Global = types.BoolValue(v.Global)
 	// Current gateways redact settings values. Keep the configured write-only bag.
 	if len(v.Settings) != 0 {

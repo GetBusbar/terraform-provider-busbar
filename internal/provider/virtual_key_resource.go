@@ -19,9 +19,10 @@ import (
 
 // Ensure the resource satisfies the framework interfaces.
 var (
-	_ resource.Resource                = (*virtualKeyResource)(nil)
-	_ resource.ResourceWithConfigure   = (*virtualKeyResource)(nil)
-	_ resource.ResourceWithImportState = (*virtualKeyResource)(nil)
+	_ resource.Resource                   = (*virtualKeyResource)(nil)
+	_ resource.ResourceWithConfigure      = (*virtualKeyResource)(nil)
+	_ resource.ResourceWithImportState    = (*virtualKeyResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*virtualKeyResource)(nil)
 )
 
 // virtualKeyResource manages a governance virtual key: POST /api/v1/admin/keys
@@ -384,10 +385,9 @@ func applyKeyView(ctx context.Context, m *virtualKeyModel, v *keyView, addError 
 	} else {
 		m.AllowedPools = pools
 	}
-	m.MaxBudgetCents = optInt64(v.MaxBudgetCents)
-	m.BudgetPeriod = types.StringNull()
-	m.RPMLimit = optInt64(v.RPMLimit)
-	m.TPMLimit = optInt64(v.TPMLimit)
+	// Deprecated limit attributes are rejected by ValidateConfig and never sent to
+	// the server. Do not refresh them from the API: writing back a non-null server
+	// value when config is null would cause a perpetual diff.
 	m.Enabled = types.BoolValue(v.Enabled)
 	m.CreatedAt = types.Int64Value(v.CreatedAt)
 }
@@ -419,7 +419,11 @@ func (r *virtualKeyResource) ValidateConfig(ctx context.Context, req resource.Va
 }
 
 func validateKeyLimits(m *virtualKeyModel, addError func(string, string)) bool {
-	if !m.MaxBudgetCents.IsNull() || !m.RPMLimit.IsNull() || !m.TPMLimit.IsNull() || (!m.BudgetPeriod.IsNull() && !m.BudgetPeriod.IsUnknown()) {
+	set := (!m.MaxBudgetCents.IsNull() && !m.MaxBudgetCents.IsUnknown()) ||
+		(!m.RPMLimit.IsNull() && !m.RPMLimit.IsUnknown()) ||
+		(!m.TPMLimit.IsNull() && !m.TPMLimit.IsUnknown()) ||
+		(!m.BudgetPeriod.IsNull() && !m.BudgetPeriod.IsUnknown())
+	if set {
 		addError("Unsupported key limits", "busbar 1.5 and later enforce budgets and rates on groups. Remove legacy key limit attributes.")
 		return false
 	}
