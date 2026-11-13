@@ -127,7 +127,10 @@ print({json.dumps(health)!r} if any(arg.endswith("/health") for arg in sys.argv)
                         os.kill(int(pid_file.read_text()), signal.SIGTERM)
                     except ProcessLookupError:
                         pass
-        self.assertEqual((self.root / "env").read_text(), f"BUSBAR_TEST_CONFIG_FILE={self.state}/config.yaml\nBUSBAR_TEST_HOOK_MODULE=tfacc-gate\n")
+        env_lines = (self.root / "env").read_text().splitlines()
+        self.assertEqual(len(env_lines[0].split("=", 1)[1]), 64)
+        self.assertEqual(env_lines[0].split("=", 1)[0], "BUSBAR_ADMIN_TOKEN")
+        self.assertEqual("\n".join(env_lines[1:]) + "\n", f"BUSBAR_TEST_CONFIG_FILE={self.state}/config.yaml\nBUSBAR_TEST_HOOK_MODULE=tfacc-gate\n")
         config = (self.state / "config.yaml").read_text()
         self.assertNotIn("allow_unsigned", config)
         self.assertFalse(json.loads(config)["admin_require_mtls"])
