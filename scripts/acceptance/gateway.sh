@@ -94,7 +94,14 @@ config = {
 }
 (state / "config.yaml").write_text(json.dumps(config, indent=2) + "\n")
 PYCONFIG
-    ANTHROPIC_API_KEY=dummy BUSBAR_ADMIN_TOKEN=tfacc-admin-token \
+    # Per-run admin credential, generated here and never committed.
+    if command -v openssl >/dev/null 2>&1; then
+      admin_token=$(openssl rand -hex 32)
+    else
+      admin_token=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    fi
+    admin_header="x-admin-token: $admin_token"
+    ANTHROPIC_API_KEY=dummy BUSBAR_ADMIN_TOKEN="$admin_token" \
       BUSBAR_CONFIG="$state_dir/config.yaml" \
       "$gateway" > "$state_dir/busbar.log" 2>&1 &
     pid=$!
@@ -102,7 +109,7 @@ PYCONFIG
     ready=false
     for _ in $(seq 1 30); do
       if curl -fsS http://localhost:8081/api/v1/admin/hooks/tfacc-fixture-proof \
-        -H 'x-admin-token: tfacc-admin-token' > "$state_dir/hook.json"; then
+        -H "$admin_header" > "$state_dir/hook.json"; then
         ready=true; break
       fi
       kill -0 "$pid" 2>/dev/null || break
@@ -113,7 +120,7 @@ PYCONFIG
       exit 1
     fi
     curl -fsS http://localhost:8081/api/v1/admin/hooks/tfacc-fixture-proof/health \
-      -H 'x-admin-token: tfacc-admin-token' > "$state_dir/hook-health.json"
+      -H "$admin_header" > "$state_dir/hook-health.json"
     python3 - "$state_dir/hook.json" "$state_dir/hook-health.json" "$module" <<'PY'
 import json
 import sys
@@ -128,6 +135,8 @@ if (health.get("reachable") is not True
         or health.get("transport", {}).get("target") != sys.argv[3]):
     sys.exit("gateway did not resolve the signed gate fixture to a loaded plugin")
 PY
+    echo "::add-mask::$admin_token"
+    echo "BUSBAR_ADMIN_TOKEN=$admin_token" >> "${GITHUB_ENV:?GITHUB_ENV required}"
     echo "BUSBAR_TEST_CONFIG_FILE=$state_dir/config.yaml" >> "${GITHUB_ENV:?GITHUB_ENV required}"
     echo "BUSBAR_TEST_HOOK_MODULE=$module" >> "${GITHUB_ENV:?GITHUB_ENV required}"
     ;;
